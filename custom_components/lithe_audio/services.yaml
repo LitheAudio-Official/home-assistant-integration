@@ -130,17 +130,17 @@ send_raw_command:
         text:
     cmd_type:
       name: Command type
-      description: 1 = GET, 2 = SET (default).
+      description: GET or SET (default SET).
       required: false
-      default: 2
-      example: 2
+      default: "set"
+      example: "set"
       selector:
         select:
           options:
             - label: "GET (0x01)"
-              value: 1
+              value: "get"
             - label: "SET (0x02)"
-              value: 2
+              value: "set"
 
 reboot:
   name: Reboot speaker
