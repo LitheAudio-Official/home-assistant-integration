@@ -1,0 +1,153 @@
+play_chime:
+  name: Play chime
+  description: >
+    Trigger an embedded audio cue (doorbell/alarm/etc.) on one or more
+    Lithe Audio speakers using MB#80. Files are stored on the speaker
+    at /system/usr/songN.mp3 (N = 1–15 depending on model).
+  target:
+    entity:
+      integration: lithe_audio
+      domain: media_player
+  fields:
+    chime_index:
+      name: Chime index
+      description: Index of the embedded audio cue (1–15).
+      required: true
+      example: 1
+      selector:
+        number:
+          min: 1
+          max: 15
+          mode: box
+
+play_preset:
+  name: Play preset
+  description: >
+    Recall a saved favourite by slot number (MB#70 FAV_PLAY:N).
+  target:
+    entity:
+      integration: lithe_audio
+      domain: media_player
+  fields:
+    preset_slot:
+      name: Preset slot
+      description: Favourite slot number (1–9).
+      required: true
+      example: 1
+      selector:
+        number:
+          min: 1
+          max: 9
+          mode: box
+
+save_preset:
+  name: Save preset
+  description: >
+    Save the currently-playing item into a favourite slot
+    (MB#70 FAV_SAVE:N). Useful for capturing a radio station you
+    want to recall later.
+  target:
+    entity:
+      integration: lithe_audio
+      domain: media_player
+  fields:
+    preset_slot:
+      name: Preset slot
+      description: Favourite slot number (1–9).
+      required: true
+      example: 1
+      selector:
+        number:
+          min: 1
+          max: 9
+          mode: box
+
+delete_preset:
+  name: Delete preset
+  description: >
+    Clear a saved favourite slot (MB#70 FAV_DELETE:N).
+  target:
+    entity:
+      integration: lithe_audio
+      domain: media_player
+  fields:
+    preset_slot:
+      name: Preset slot
+      description: Favourite slot number to delete (1–9).
+      required: true
+      example: 1
+      selector:
+        number:
+          min: 1
+          max: 9
+          mode: box
+
+play_direct:
+  name: Play direct URL or file
+  description: >
+    Play a direct URL or an on-device file via MB#41 PLAYITEM. Pass
+    a full http(s) URL, or a local path like /system/usr/song1.mp3.
+  target:
+    entity:
+      integration: lithe_audio
+      domain: media_player
+  fields:
+    path:
+      name: URL or path
+      description: Either an http(s) URL or a /system/usr/songN.mp3 path.
+      required: true
+      example: "http://example.com/announcement.mp3"
+      selector:
+        text:
+
+send_raw_command:
+  name: Send raw LUCI command
+  description: >
+    Advanced / diagnostics — send a raw LUCI packet to the speaker by
+    Message Box ID and payload. Refer to the LUCI Tech Note for the full
+    MB ID catalogue.
+  target:
+    entity:
+      integration: lithe_audio
+      domain: media_player
+  fields:
+    mbid:
+      name: Message Box ID
+      description: Numeric MBID (e.g. 40 for Transport).
+      required: true
+      example: 40
+      selector:
+        number:
+          min: 0
+          max: 65535
+          mode: box
+    payload:
+      name: Payload
+      description: ASCII payload string.
+      required: true
+      example: "PLAY"
+      selector:
+        text:
+    cmd_type:
+      name: Command type
+      description: 1 = GET, 2 = SET (default).
+      required: false
+      default: 2
+      example: 2
+      selector:
+        select:
+          options:
+            - label: "GET (0x01)"
+              value: 1
+            - label: "SET (0x02)"
+              value: 2
+
+reboot:
+  name: Reboot speaker
+  description: >
+    Trigger a speaker reboot (MB#37). The connection will drop briefly
+    while the speaker restarts.
+  target:
+    entity:
+      integration: lithe_audio
+      domain: media_player

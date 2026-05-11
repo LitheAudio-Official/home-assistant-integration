@@ -1,0 +1,7 @@
+{
+  "name": "Lithe Audio",
+  "render_readme": true,
+  "homeassistant": "2024.10.0",
+  "iot_class": "Local Push",
+  "domains": ["media_player", "button", "number", "sensor", "switch"]
+}

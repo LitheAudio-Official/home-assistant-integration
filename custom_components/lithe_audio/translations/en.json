@@ -1,0 +1,123 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Add a Lithe Audio speaker",
+        "description": "Scan the network for speakers automatically, or enter a speaker's IP address manually.",
+        "data": {
+          "mode": "How would you like to find your speaker?"
+        }
+      },
+      "scan": {
+        "title": "Select a speaker",
+        "description": "Found {count} speaker(s) on the network."
+      },
+      "manual": {
+        "title": "Enter speaker details",
+        "description": "Enter the IP address of the speaker. The model picker determines whether the integration uses TLS (LS10) or plain TCP (LS9).",
+        "data": {
+          "host": "IP address",
+          "port": "Port (default 7777)",
+          "name": "Friendly name",
+          "model": "Speaker model"
+        }
+      },
+      "certificate": {
+        "title": "LS10 client certificate",
+        "description": "LS10 speakers ({host}) use TLS 1.2 mutual authentication. Paste the contents of the Lithe-issued client.pem and client.key below. Contact developer@litheaudio.com to obtain these files.",
+        "data": {
+          "cert_pem": "client.pem contents",
+          "cert_key": "client.key contents"
+        }
+      },
+      "confirm": {
+        "title": "Confirm",
+        "description": "Add {host}:{port} ({model}, {platform}) to Home Assistant?"
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not connect — check the IP address, port, and (for LS10) that the client certificate is valid.",
+      "invalid_pem": "client.pem doesn't look like a valid PEM certificate.",
+      "invalid_key": "client.key doesn't look like a valid PEM private key.",
+      "unknown": "Unexpected error — see the Home Assistant log for details."
+    },
+    "abort": {
+      "already_configured": "This speaker is already configured.",
+      "no_devices_found": "No Lithe Audio speakers were found on the network."
+    }
+  },
+  "services": {
+    "play_chime": {
+      "name": "Play chime",
+      "description": "Trigger an embedded audio cue on the speaker.",
+      "fields": {
+        "chime_index": {
+          "name": "Chime index",
+          "description": "Number of the embedded cue (1–15)."
+        }
+      }
+    },
+    "play_preset": {
+      "name": "Play preset",
+      "description": "Recall a saved favourite by slot number.",
+      "fields": {
+        "preset_slot": {
+          "name": "Preset slot",
+          "description": "Favourite slot number (1–9)."
+        }
+      }
+    },
+    "save_preset": {
+      "name": "Save preset",
+      "description": "Save the currently playing item into a slot.",
+      "fields": {
+        "preset_slot": {
+          "name": "Preset slot",
+          "description": "Favourite slot number (1–9)."
+        }
+      }
+    },
+    "delete_preset": {
+      "name": "Delete preset",
+      "description": "Clear a saved favourite slot.",
+      "fields": {
+        "preset_slot": {
+          "name": "Preset slot",
+          "description": "Favourite slot number (1–9)."
+        }
+      }
+    },
+    "play_direct": {
+      "name": "Play direct URL or file",
+      "description": "Play a URL or an on-device file via PLAYITEM.",
+      "fields": {
+        "path": {
+          "name": "URL or path",
+          "description": "http(s) URL or /system/usr/songN.mp3 path."
+        }
+      }
+    },
+    "send_raw_command": {
+      "name": "Send raw LUCI command",
+      "description": "Send a raw LUCI packet (advanced).",
+      "fields": {
+        "mbid": {
+          "name": "Message Box ID",
+          "description": "Numeric MBID."
+        },
+        "payload": {
+          "name": "Payload",
+          "description": "ASCII payload."
+        },
+        "cmd_type": {
+          "name": "Command type",
+          "description": "GET (1) or SET (2)."
+        }
+      }
+    },
+    "reboot": {
+      "name": "Reboot",
+      "description": "Reboot the speaker."
+    }
+  }
+}

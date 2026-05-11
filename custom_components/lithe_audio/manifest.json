@@ -1,0 +1,22 @@
+{
+  "domain": "lithe_audio",
+  "name": "Lithe Audio",
+  "version": "0.1.0",
+  "codeowners": ["@LitheAudio-Official"],
+  "config_flow": true,
+  "documentation": "https://github.com/LitheAudio-Official/home-assistant-integration",
+  "issue_tracker": "https://github.com/LitheAudio-Official/home-assistant-integration/issues",
+  "iot_class": "local_push",
+  "integration_type": "device",
+  "quality_scale": "bronze",
+  "requirements": [],
+  "dependencies": [],
+  "zeroconf": [
+    {
+      "type": "_googlecast._tcp.local.",
+      "properties": {
+        "md": "Lithe*"
+      }
+    }
+  ]
+}
