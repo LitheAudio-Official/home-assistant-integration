@@ -183,12 +183,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: LitheAudioConfigEntry) -
     except Exception:  # noqa: BLE001
         pass
 
+    # Resolve the client certificate for encrypted-connection speakers.
+    # Priority: explicit entry data → bundled defaults shipped with the
+    # integration. The bundled certs live in custom_components/lithe_audio/
+    # certs/ and are loaded in an executor thread to avoid blocking the
+    # event loop on disk I/O during setup.
+    cert_pem: str | None = None
+    cert_key: str | None = None
+    if platform == PLATFORM_LS10:
+        cert_pem = data.get(CONF_CERT_PEM)
+        cert_key = data.get(CONF_CERT_KEY)
+        if not (cert_pem and cert_key):
+            cert_pem, cert_key = await hass.async_add_executor_job(
+                _load_bundled_certs,
+            )
+
     client = LitheAudioClient(
         host=host,
         port=port,
         platform=platform,
-        client_cert_pem=data.get(CONF_CERT_PEM) if platform == PLATFORM_LS10 else None,
-        client_cert_key=data.get(CONF_CERT_KEY) if platform == PLATFORM_LS10 else None,
+        client_cert_pem=cert_pem,
+        client_cert_key=cert_key,
         client_app_id="homeassistant.lithe_audio",
         client_app_version="0.1.0",
         client_ip=ha_ip,
@@ -225,3 +240,22 @@ async def async_unload_entry(hass: HomeAssistant, entry: LitheAudioConfigEntry) 
         runtime: LitheAudioRuntimeData = entry.runtime_data
         await runtime.client.async_stop()
     return unload_ok
+
+
+def _load_bundled_certs() -> tuple[str | None, str | None]:
+    """Load the integration-bundled client certificate and key.
+
+    Returns (pem_contents, key_contents) or (None, None) if either file is
+    missing. Runs in an executor thread; never call directly from the
+    event loop.
+    """
+    from pathlib import Path
+    base = Path(__file__).parent / "certs"
+    pem_path = base / "client.pem"
+    key_path = base / "client.key"
+    if not (pem_path.is_file() and key_path.is_file()):
+        return None, None
+    try:
+        return pem_path.read_text(), key_path.read_text()
+    except OSError:
+        return None, None

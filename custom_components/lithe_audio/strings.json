@@ -22,28 +22,19 @@
           "model": "Speaker model"
         }
       },
-      "certificate": {
-        "title": "Speaker certificate",
-        "description": "This speaker model ({host}) uses an encrypted connection that requires a client certificate. Paste the contents of the Lithe-issued client.pem and client.key files below. Contact developer@litheaudio.com if you don't have them.",
-        "data": {
-          "cert_pem": "client.pem contents",
-          "cert_key": "client.key contents"
-        }
-      },
       "confirm": {
         "title": "Confirm",
         "description": "Add {host}:{port} ({model}) to Home Assistant?"
       }
     },
     "error": {
-      "cannot_connect": "Could not connect — check the IP address, port, and (where required) that the client certificate is valid.",
-      "invalid_pem": "client.pem doesn't look like a valid PEM certificate.",
-      "invalid_key": "client.key doesn't look like a valid PEM private key.",
-      "unknown": "Unexpected error — see the Home Assistant log for details."
+      "cannot_connect": "Could not connect to the speaker. Check that the IP address is correct and the speaker is on the same network as Home Assistant.",
+      "unknown": "Unexpected error - see the Home Assistant log for details."
     },
     "abort": {
       "already_configured": "This speaker is already configured.",
-      "no_devices_found": "No Lithe Audio speakers were found on the network."
+      "no_devices_found": "No Lithe Audio speakers were found on the network.",
+      "cannot_connect": "Could not establish a secure connection to the speaker. Check that the IP address is correct and the speaker is on the same network as Home Assistant."
     }
   },
   "services": {

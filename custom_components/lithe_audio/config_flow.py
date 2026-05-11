@@ -1,12 +1,12 @@
 """Config flow for the Lithe Audio integration.
 
 Three entry points:
-  - User-initiated:      manual host/port entry, model picker, cert step if LS10
+  - User-initiated:      manual host/port entry, model picker
   - LSSDP discovery:     populated automatically by ``async_step_discovery_lssdp``
   - Zeroconf discovery:  Google Cast / generic mDNS catches the speaker first
 
-LS10 platform speakers REQUIRE the Lithe-issued client.pem and client.key —
-the user pastes the contents of both into text fields during the flow.
+For encrypted-connection speaker models the integration uses the bundled
+client certificate transparently; the installer never sees a cert prompt.
 """
 from __future__ import annotations
 
@@ -23,14 +23,9 @@ from homeassistant.helpers.selector import (
     SelectSelector,
     SelectSelectorConfig,
     SelectSelectorMode,
-    TextSelector,
-    TextSelectorConfig,
-    TextSelectorType,
 )
 
 from .const import (
-    CONF_CERT_KEY,
-    CONF_CERT_PEM,
     CONF_MAC,
     CONF_MODEL,
     CONF_NAME,
@@ -66,13 +61,6 @@ _MODEL_OPTIONS = [
 
 def _platform_from_model(model: str) -> str:
     return PLATFORM_LS10 if model in LS10_MODELS else PLATFORM_LS9
-
-
-def _validate_pem(text: str, label: str) -> bool:
-    """Cheap shape check — does the input look like a PEM block?"""
-    if not text or "-----BEGIN" not in text or "-----END" not in text:
-        return False
-    return True
 
 
 class LitheAudioConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -205,62 +193,30 @@ class LitheAudioConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
     async def _async_after_basic_info(self) -> ConfigFlowResult:
-        """Branch: LS10 needs the cert step, LS9 can finish immediately."""
+        """Validate the connection (running a silent TLS handshake for
+        encrypted-connection speakers), then go to confirm."""
         # Use MAC if we have one, otherwise fall back to host:port
         unique_id = (self._mac or f"{self._host}:{self._port}").lower().replace(":", "")
         await self.async_set_unique_id(unique_id)
         self._abort_if_unique_id_configured(updates={CONF_HOST: self._host})
 
         if self._platform == PLATFORM_LS10:
-            return await self.async_step_certificate()
-        return await self.async_step_confirm()
-
-    # ── LS10 certificate step ─────────────────────────────────────────────
-
-    async def async_step_certificate(
-        self, user_input: dict[str, Any] | None = None,
-    ) -> ConfigFlowResult:
-        """Collect the LS10 client.pem and client.key contents."""
-        errors: dict[str, str] = {}
-        if user_input is not None:
-            pem = user_input[CONF_CERT_PEM].strip()
-            key = user_input[CONF_CERT_KEY].strip()
-            if not _validate_pem(pem, "client.pem"):
-                errors[CONF_CERT_PEM] = "invalid_pem"
-            if not _validate_pem(key, "client.key"):
-                errors[CONF_CERT_KEY] = "invalid_key"
-            if not errors:
-                # Smoke test: try a TLS handshake before saving anything
-                test_ok, test_err = await self.hass.async_add_executor_job(
-                    _test_ls10_handshake, self._host, self._port, pem, key,
+            # Validate connectivity with the bundled certs. If the handshake
+            # succeeds we don't need to expose any cert UI to the installer.
+            pem, key = await self.hass.async_add_executor_job(_load_bundled_certs)
+            if not (pem and key):
+                # Bundled certs missing — installation is broken; fail clearly.
+                return self.async_abort(reason="cannot_connect")
+            test_ok, test_err = await self.hass.async_add_executor_job(
+                _test_ls10_handshake, self._host, self._port, pem, key,
+            )
+            if not test_ok:
+                _LOGGER.warning(
+                    "Connection test to %s failed: %s", self._host, test_err,
                 )
-                if not test_ok:
-                    errors["base"] = "cannot_connect"
-                    _LOGGER.warning("LS10 handshake test failed: %s", test_err)
-                else:
-                    self._pem = pem
-                    self._key = key
-                    return await self.async_step_confirm()
+                return self.async_abort(reason="cannot_connect")
 
-        return self.async_show_form(
-            step_id="certificate",
-            data_schema=vol.Schema({
-                vol.Required(CONF_CERT_PEM): TextSelector(
-                    TextSelectorConfig(
-                        type=TextSelectorType.TEXT,
-                        multiline=True,
-                    ),
-                ),
-                vol.Required(CONF_CERT_KEY): TextSelector(
-                    TextSelectorConfig(
-                        type=TextSelectorType.TEXT,
-                        multiline=True,
-                    ),
-                ),
-            }),
-            errors=errors,
-            description_placeholders={"host": self._host or ""},
-        )
+        return await self.async_step_confirm()
 
     # ── Confirm & create entry ────────────────────────────────────────────
 
@@ -278,9 +234,8 @@ class LitheAudioConfigFlow(ConfigFlow, domain=DOMAIN):
             }
             if self._mac:
                 data[CONF_MAC] = self._mac
-            if self._platform == PLATFORM_LS10:
-                data[CONF_CERT_PEM] = self._pem
-                data[CONF_CERT_KEY] = self._key
+            # No certs in entry data — encrypted-connection speakers use
+            # the certs bundled with the integration (loaded at setup time).
             return self.async_create_entry(title=self._name or self._host, data=data)
 
         return self.async_show_form(
@@ -355,3 +310,22 @@ def _test_ls10_handshake(
             cert_dir.rmdir()
         except OSError:
             pass
+
+
+def _load_bundled_certs() -> tuple[str | None, str | None]:
+    """Load the integration-bundled client certificate and key.
+
+    Returns (pem_contents, key_contents) or (None, None) if either file is
+    missing. Runs in an executor thread; never call directly from the
+    event loop.
+    """
+    from pathlib import Path
+    base = Path(__file__).parent / "certs"
+    pem_path = base / "client.pem"
+    key_path = base / "client.key"
+    if not (pem_path.is_file() and key_path.is_file()):
+        return None, None
+    try:
+        return pem_path.read_text(), key_path.read_text()
+    except OSError:
+        return None, None
