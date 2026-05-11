@@ -1,17 +1,17 @@
 play_chime:
   name: Play chime
   description: >
-    Trigger an embedded audio cue (doorbell/alarm/etc.) on one or more
-    Lithe Audio speakers using MB#80. Files are stored on the speaker
-    at /system/usr/songN.mp3 (N = 1–15 depending on model).
+    Trigger a built-in audio cue (doorbell, alarm, notification tone, etc.)
+    on one or more Lithe Audio speakers. Cues are stored on the speaker
+    itself, so they play instantly with no streaming delay.
   target:
     entity:
       integration: lithe_audio
       domain: media_player
   fields:
     chime_index:
-      name: Chime index
-      description: Index of the embedded audio cue (1–15).
+      name: Chime number
+      description: Number of the built-in cue (1-15, depending on speaker model).
       required: true
       example: 1
       selector:
@@ -23,7 +23,8 @@ play_chime:
 play_preset:
   name: Play preset
   description: >
-    Recall a saved favourite by slot number (MB#70 FAV_PLAY:N).
+    Play a saved favourite by slot number. Useful for one-tap recall of
+    radio stations or playlists.
   target:
     entity:
       integration: lithe_audio
@@ -31,7 +32,7 @@ play_preset:
   fields:
     preset_slot:
       name: Preset slot
-      description: Favourite slot number (1–9).
+      description: Favourite slot number (1-9).
       required: true
       example: 1
       selector:
@@ -43,9 +44,8 @@ play_preset:
 save_preset:
   name: Save preset
   description: >
-    Save the currently-playing item into a favourite slot
-    (MB#70 FAV_SAVE:N). Useful for capturing a radio station you
-    want to recall later.
+    Save whatever is currently playing into a favourite slot so it can be
+    recalled later with Play Preset.
   target:
     entity:
       integration: lithe_audio
@@ -53,7 +53,7 @@ save_preset:
   fields:
     preset_slot:
       name: Preset slot
-      description: Favourite slot number (1–9).
+      description: Favourite slot number (1-9).
       required: true
       example: 1
       selector:
@@ -64,8 +64,7 @@ save_preset:
 
 delete_preset:
   name: Delete preset
-  description: >
-    Clear a saved favourite slot (MB#70 FAV_DELETE:N).
+  description: Clear a saved favourite slot.
   target:
     entity:
       integration: lithe_audio
@@ -73,7 +72,7 @@ delete_preset:
   fields:
     preset_slot:
       name: Preset slot
-      description: Favourite slot number to delete (1–9).
+      description: Favourite slot number to delete (1-9).
       required: true
       example: 1
       selector:
@@ -83,37 +82,35 @@ delete_preset:
           mode: box
 
 play_direct:
-  name: Play direct URL or file
+  name: Play URL or file
   description: >
-    Play a direct URL or an on-device file via MB#41 PLAYITEM. Pass
-    a full http(s) URL, or a local path like /system/usr/song1.mp3.
+    Play an audio URL, or a built-in file on the speaker.
   target:
     entity:
       integration: lithe_audio
       domain: media_player
   fields:
     path:
-      name: URL or path
-      description: Either an http(s) URL or a /system/usr/songN.mp3 path.
+      name: URL or file path
+      description: An http(s) URL, or a built-in file path on the speaker.
       required: true
       example: "http://example.com/announcement.mp3"
       selector:
         text:
 
 send_raw_command:
-  name: Send raw LUCI command
+  name: Send advanced command
   description: >
-    Advanced / diagnostics — send a raw LUCI packet to the speaker by
-    Message Box ID and payload. Refer to the LUCI Tech Note for the full
-    MB ID catalogue.
+    Advanced - send a low-level control command directly to the speaker.
+    Most users will not need this; use the other services for normal control.
   target:
     entity:
       integration: lithe_audio
       domain: media_player
   fields:
     mbid:
-      name: Message Box ID
-      description: Numeric MBID (e.g. 40 for Transport).
+      name: Command ID
+      description: Numeric command identifier.
       required: true
       example: 40
       selector:
@@ -123,30 +120,29 @@ send_raw_command:
           mode: box
     payload:
       name: Payload
-      description: ASCII payload string.
+      description: Command payload (text).
       required: true
       example: "PLAY"
       selector:
         text:
     cmd_type:
       name: Command type
-      description: GET or SET (default SET).
+      description: Get (read) or Set (write). Defaults to Set.
       required: false
       default: "set"
       example: "set"
       selector:
         select:
           options:
-            - label: "GET (0x01)"
+            - label: "Get (read)"
               value: "get"
-            - label: "SET (0x02)"
+            - label: "Set (write)"
               value: "set"
 
 reboot:
   name: Reboot speaker
   description: >
-    Trigger a speaker reboot (MB#37). The connection will drop briefly
-    while the speaker restarts.
+    Reboot the speaker. The connection will drop briefly while it restarts.
   target:
     entity:
       integration: lithe_audio

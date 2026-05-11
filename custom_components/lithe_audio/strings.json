@@ -14,7 +14,7 @@
       },
       "manual": {
         "title": "Enter speaker details",
-        "description": "Enter the IP address of the speaker. The model picker determines whether the integration uses TLS (LS10) or plain TCP (LS9).",
+        "description": "Enter the IP address of the speaker, then choose the model. The integration will use the correct connection method automatically.",
         "data": {
           "host": "IP address",
           "port": "Port (default 7777)",
@@ -23,8 +23,8 @@
         }
       },
       "certificate": {
-        "title": "LS10 client certificate",
-        "description": "LS10 speakers ({host}) use TLS 1.2 mutual authentication. Paste the contents of the Lithe-issued client.pem and client.key below. Contact developer@litheaudio.com to obtain these files.",
+        "title": "Speaker certificate",
+        "description": "This speaker model ({host}) uses an encrypted connection that requires a client certificate. Paste the contents of the Lithe-issued client.pem and client.key files below. Contact developer@litheaudio.com if you don't have them.",
         "data": {
           "cert_pem": "client.pem contents",
           "cert_key": "client.key contents"
@@ -32,11 +32,11 @@
       },
       "confirm": {
         "title": "Confirm",
-        "description": "Add {host}:{port} ({model}, {platform}) to Home Assistant?"
+        "description": "Add {host}:{port} ({model}) to Home Assistant?"
       }
     },
     "error": {
-      "cannot_connect": "Could not connect — check the IP address, port, and (for LS10) that the client certificate is valid.",
+      "cannot_connect": "Could not connect — check the IP address, port, and (where required) that the client certificate is valid.",
       "invalid_pem": "client.pem doesn't look like a valid PEM certificate.",
       "invalid_key": "client.key doesn't look like a valid PEM private key.",
       "unknown": "Unexpected error — see the Home Assistant log for details."
@@ -49,31 +49,31 @@
   "services": {
     "play_chime": {
       "name": "Play chime",
-      "description": "Trigger an embedded audio cue on the speaker.",
+      "description": "Trigger a built-in audio cue on the speaker (doorbell, alarm, notification, etc).",
       "fields": {
         "chime_index": {
-          "name": "Chime index",
-          "description": "Number of the embedded cue (1–15)."
+          "name": "Chime number",
+          "description": "Number of the built-in cue to play (1-15, depending on speaker model)."
         }
       }
     },
     "play_preset": {
       "name": "Play preset",
-      "description": "Recall a saved favourite by slot number.",
+      "description": "Play a saved favourite by slot number.",
       "fields": {
         "preset_slot": {
           "name": "Preset slot",
-          "description": "Favourite slot number (1–9)."
+          "description": "Favourite slot number (1-9)."
         }
       }
     },
     "save_preset": {
       "name": "Save preset",
-      "description": "Save the currently playing item into a slot.",
+      "description": "Save the currently playing item into a favourite slot.",
       "fields": {
         "preset_slot": {
           "name": "Preset slot",
-          "description": "Favourite slot number (1–9)."
+          "description": "Favourite slot number (1-9)."
         }
       }
     },
@@ -83,35 +83,35 @@
       "fields": {
         "preset_slot": {
           "name": "Preset slot",
-          "description": "Favourite slot number (1–9)."
+          "description": "Favourite slot number (1-9)."
         }
       }
     },
     "play_direct": {
-      "name": "Play direct URL or file",
-      "description": "Play a URL or an on-device file via PLAYITEM.",
+      "name": "Play URL or file",
+      "description": "Play an audio URL, or a built-in file on the speaker.",
       "fields": {
         "path": {
-          "name": "URL or path",
-          "description": "http(s) URL or /system/usr/songN.mp3 path."
+          "name": "URL or file path",
+          "description": "An http(s) URL, or a built-in file path."
         }
       }
     },
     "send_raw_command": {
-      "name": "Send raw LUCI command",
-      "description": "Send a raw LUCI packet (advanced).",
+      "name": "Send advanced command",
+      "description": "Advanced - send a low-level command to the speaker. Most users will not need this.",
       "fields": {
         "mbid": {
-          "name": "Message Box ID",
-          "description": "Numeric MBID."
+          "name": "Command ID",
+          "description": "Numeric command identifier."
         },
         "payload": {
           "name": "Payload",
-          "description": "ASCII payload."
+          "description": "Command payload (text)."
         },
         "cmd_type": {
           "name": "Command type",
-          "description": "GET (1) or SET (2)."
+          "description": "Get (read) or Set (write)."
         }
       }
     },

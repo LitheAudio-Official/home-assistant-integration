@@ -133,7 +133,6 @@ class LitheAudioMediaPlayer(LitheAudioEntity, MediaPlayerEntity):
         return {
             "source_id": s.source_id,
             "host": self._client.host,
-            "platform": self._client.platform,
             "model": s.model,
             "firmware": s.firmware,
             "mac": s.mac,

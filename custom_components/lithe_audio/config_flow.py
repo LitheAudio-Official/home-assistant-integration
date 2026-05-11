@@ -54,12 +54,12 @@ from .discovery import async_discover
 _LOGGER = logging.getLogger(__name__)
 
 _MODEL_OPTIONS = [
-    SelectOptionDict(value=MODEL_PRO2, label="LS10 — PRO2 (in-ceiling)"),
-    SelectOptionDict(value=MODEL_V3, label="LS10 — WiFi V3"),
-    SelectOptionDict(value=MODEL_IO1, label="LS10 — iO1"),
-    SelectOptionDict(value=MODEL_V2, label="LS9 — WiFi V2"),
-    SelectOptionDict(value=MODEL_PRO, label="LS9 — PRO"),
-    SelectOptionDict(value=MODEL_MICRO, label="LS9 — Micro Subwoofer"),
+    SelectOptionDict(value=MODEL_PRO2, label="PRO2 (in-ceiling)"),
+    SelectOptionDict(value=MODEL_V3, label="WiFi V3"),
+    SelectOptionDict(value=MODEL_IO1, label="iO1"),
+    SelectOptionDict(value=MODEL_V2, label="WiFi V2"),
+    SelectOptionDict(value=MODEL_PRO, label="PRO"),
+    SelectOptionDict(value=MODEL_MICRO, label="Micro Subwoofer"),
     SelectOptionDict(value=MODEL_GENERIC, label="Other / Generic"),
 ]
 
@@ -158,7 +158,7 @@ class LitheAudioConfigFlow(ConfigFlow, domain=DOMAIN):
         options = [
             SelectOptionDict(
                 value=d.unique_id,
-                label=f"{d.name} — {d.host} ({d.platform}, {d.model or '?'})",
+                label=f"{d.name} — {d.host} ({d.model or 'Lithe speaker'})",
             )
             for d in new_devices
         ]

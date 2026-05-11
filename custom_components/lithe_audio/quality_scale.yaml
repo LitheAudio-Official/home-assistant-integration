@@ -43,9 +43,9 @@ rules:
   reauthentication-flow:
     status: exempt
     comment: |
-      LS10 mutual-auth uses a static client certificate issued by Lithe.
-      There is no token rotation; the user replaces the cert via the
-      reconfigure flow if it ever changes.
+      Encrypted-connection models use a static client certificate issued by
+      Lithe Audio. There is no token rotation; the user replaces the cert
+      via the reconfigure flow if it ever changes.
   test-coverage: todo
 
   # ── Gold ───────────────────────────────────────────────────────────────
