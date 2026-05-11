@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+.venv/
+venv/
+.idea/
+.vscode/
+
+# Never commit real client certificates
+*.pem
+*.key
