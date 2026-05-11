@@ -1,117 +1,115 @@
 # Lithe Audio for Home Assistant
 
-A full-featured Home Assistant integration for [Lithe Audio](https://litheaudio.com)
-speakers using the **LUCI** local protocol — no cloud, no polling, no proprietary apps
-required. Push-based state updates, automatic reconnect, and complete feature parity
-with the Lithe Audio companion app.
+The official Home Assistant integration for [Lithe Audio](https://litheaudio.com)
+speakers. Control playback, volume, sources, chimes, and presets directly from
+Home Assistant — local-only, no cloud, no polling delays. State updates appear in
+Home Assistant instantly because the speaker pushes them.
 
 ## Features
 
-| Capability                  | Implementation                                  |
-| --------------------------- | ----------------------------------------------- |
-| Play / Pause / Stop / Seek  | MB#40 (transport)                               |
-| Next / Previous             | MB#40 NEXT / PREV                               |
-| Volume 0–100 + step / mute  | MB#64 / MB#63 (with 250ms debounce)             |
-| Source detection            | MB#50 → mapped to human-readable names           |
-| Now-playing metadata        | MB#42 JSON push (title/artist/album/art)        |
-| Embedded chimes (1–15)      | MB#80 — exposed as buttons + `play_chime` svc    |
-| Favourites / Presets        | MB#70 FAV_SAVE / FAV_PLAY / FAV_DELETE          |
-| AUX / Line-in switching     | MB#95 / MB#96                                   |
-| Bluetooth power             | MB#209 ON / OFF                                 |
-| Reboot                      | MB#37                                           |
-| Raw command escape hatch    | Any MBID via `send_raw_command` service          |
-| Multi-room grouping         | Via HA's native `media_player.join` (Cast)      |
-| LSSDP auto-discovery        | Port 1800 multicast (Lithe-specific)            |
-| Zeroconf discovery          | `_googlecast._tcp.local.` with `md=Lithe*`      |
-| LS10 TLS 1.2 mutual auth    | Client certificate required (see below)         |
-| LS9 plain TCP               | No certificate                                   |
+- **Playback** — play, pause, stop, next, previous, seek
+- **Volume & mute** — full 0-100% control with smooth slider response
+- **Now-playing metadata** — title, artist, album, album art
+- **Source detection** — Spotify, AirPlay, Tidal, Cast, Bluetooth, AUX, and more
+- **Built-in chimes** — doorbell, alarm, notification tones triggered as Home
+  Assistant buttons or via the `play_chime` service
+- **Favourites / presets** — save and recall playback by slot (1-9)
+- **AUX line-in and Bluetooth** — switch inputs from automations
+- **Multi-room** — works alongside Home Assistant's media player group helper
+  and Google Cast groups for synchronised playback
+- **Auto-discovery** — speakers appear in Home Assistant automatically when
+  detected on the local network
+- **Secure** — encrypted connection (required by certain models) is fully
+  handled by the integration
 
-### Supported models
+## Supported speakers
 
-| Platform | Models                                  | Connection         |
-| -------- | --------------------------------------- | ------------------ |
-| **LS10** | PRO2, WiFi V3, iO1                      | TLS 1.2 + cert     |
-| **LS9**  | WiFi V2, PRO, Micro Subwoofer           | Plain TCP          |
+All current Lithe Audio network speakers, including:
+
+- PRO2 (in-ceiling)
+- WiFi V3 / iO1
+- WiFi V2 / PRO
+- Micro Subwoofer
+
+Certain models require a client certificate for the encrypted connection — the
+integration will prompt for it during setup. Contact
+**developer@litheaudio.com** to request your certificate files.
 
 ## Installation
 
 ### Via HACS (recommended)
 
-1. In HACS → *Integrations*, click the three-dot menu → *Custom repositories*.
-2. Add this repo URL with category *Integration*.
-3. Search for **Lithe Audio** and install.
-4. Restart Home Assistant.
+1. In HACS go to *Integrations*, click the three-dot menu → *Custom repositories*
+2. Paste this repository's URL, category *Integration*
+3. Search for **Lithe Audio** in HACS and install
+4. Restart Home Assistant
+5. *Settings → Devices & services → Add Integration → Lithe Audio*
 
-### Manual
+### Manual install
 
-Copy `custom_components/lithe_audio/` to your `<config>/custom_components/` directory
-and restart Home Assistant.
+Copy the `custom_components/lithe_audio/` folder into your Home Assistant
+`<config>/custom_components/` directory and restart Home Assistant.
 
 ## Setup
 
-1. *Settings → Devices & services → Add Integration → **Lithe Audio***.
-2. Choose **Scan network** (LSSDP) to auto-discover speakers, or enter an IP manually.
-3. For **LS10** speakers (PRO2, V3, iO1) you'll be prompted to paste the contents of
-   `client.pem` and `client.key`. These are issued per-developer by Lithe Audio —
-   contact **developer@litheaudio.com** to request them.
-4. The integration will test the TLS handshake before saving anything. If it fails,
-   you'll get a clear error rather than a silent connection problem later.
-
-### LS10 certificate notes
-
-LS10 speakers use TLS 1.2 mutual authentication. The Lithe-issued `client.pem` is used
-as both the client certificate **and** the trust anchor (CA), because Lithe signs each
-speaker's own server certificate with the same CA. Hostname verification is disabled
-because the speaker's cert isn't bound to a specific IP.
-
-Certificates are stored in the config entry data; they never leave your Home Assistant
-instance.
+1. Go to *Settings → Devices & services → Add Integration → Lithe Audio*
+2. Choose **Scan network** to find speakers automatically, or **Enter IP
+   manually** if you prefer
+3. If your speaker requires a client certificate, you'll be prompted to paste
+   the contents of `client.pem` and `client.key`. The integration tests the
+   connection before saving, so any issue is reported immediately.
+4. Done — entities appear instantly
 
 ## Entities
 
-Each speaker creates one device with several entities:
+Each speaker creates one device with these entities:
 
-- **media_player** — primary control surface (play, pause, volume, source, metadata, art)
-- **switch.mute** — binary mute toggle for automations
-- **switch.line_in** / **switch.bluetooth** — input enable (disabled by default)
-- **sensor.source** / **sensor.now_playing** / **sensor.firmware** — diagnostics
-- **button.chime_1**…**chime_15** — embedded cue triggers (count varies by model)
-- **button.preset_1**…**preset_9** — recall saved favourites
-- **button.reboot** — restart the speaker
-- **number.volume** — alternate volume control (disabled by default)
+| Entity                   | What it does                                          |
+| ------------------------ | ----------------------------------------------------- |
+| `media_player.*`         | Main control — play, pause, volume, source, metadata  |
+| `switch.mute`            | Mute toggle for automations                           |
+| `switch.line_in`         | Enable / disable AUX or line-in input                 |
+| `switch.bluetooth`       | Enable Bluetooth receiver mode                         |
+| `sensor.source`          | Current audio source (Spotify, AirPlay, etc.)         |
+| `sensor.now_playing`     | "Artist — Title" for easy automation triggers          |
+| `sensor.firmware`        | Speaker firmware version (diagnostic)                 |
+| `button.chime_1..15`     | One button per built-in chime (count varies by model) |
+| `button.preset_1..9`     | One-tap recall of saved favourites                    |
+| `button.reboot`          | Restart the speaker                                   |
+| `number.volume`          | Alternate volume slider (disabled by default)         |
 
 ## Services
 
-| Service                          | Use case                                       |
-| -------------------------------- | ---------------------------------------------- |
-| `lithe_audio.play_chime`         | Doorbell / alarm / scheduled announcement      |
-| `lithe_audio.play_preset`        | One-tap radio station / playlist               |
-| `lithe_audio.save_preset`        | Capture current playback into a slot           |
-| `lithe_audio.delete_preset`      | Clear a slot                                   |
-| `lithe_audio.play_direct`        | Stream a URL, or play `/system/usr/songN.mp3`  |
-| `lithe_audio.send_raw_command`   | Diagnostics / advanced MBID experiments         |
-| `lithe_audio.reboot`             | Recover from a wedged speaker                  |
+| Service                          | Use case                                            |
+| -------------------------------- | --------------------------------------------------- |
+| `lithe_audio.play_chime`         | Doorbell, alarm, scheduled announcement              |
+| `lithe_audio.play_preset`        | One-tap radio / playlist recall                     |
+| `lithe_audio.save_preset`        | Capture current playback into a slot                |
+| `lithe_audio.delete_preset`      | Clear a slot                                        |
+| `lithe_audio.play_direct`        | Stream a URL or play a built-in file                 |
+| `lithe_audio.send_raw_command`   | Advanced control (see Advanced section below)        |
+| `lithe_audio.reboot`             | Restart the speaker                                 |
 
-### Example: doorbell automation
+### Example — doorbell automation
 
 ```yaml
 automation:
-  - alias: "Doorbell chime"
+  - alias: "Front door chime"
     trigger:
-      platform: state
-      entity_id: binary_sensor.front_door_button
-      to: "on"
+      - platform: state
+        entity_id: binary_sensor.front_door_button
+        to: "on"
     action:
-      service: lithe_audio.play_chime
-      target:
-        entity_id:
-          - media_player.living_room_lithe
-          - media_player.kitchen_lithe
-      data:
-        chime_index: 1
+      - service: lithe_audio.play_chime
+        target:
+          entity_id:
+            - media_player.living_room
+            - media_player.kitchen
+        data:
+          chime_index: 1
 ```
 
-### Example: play a saved Tidal station
+### Example — morning radio
 
 ```yaml
 script:
@@ -119,87 +117,70 @@ script:
     sequence:
       - service: lithe_audio.play_preset
         target:
-          entity_id: media_player.kitchen_lithe
+          entity_id: media_player.kitchen
         data:
           preset_slot: 1
       - service: media_player.volume_set
         target:
-          entity_id: media_player.kitchen_lithe
+          entity_id: media_player.kitchen
         data:
           volume_level: 0.35
 ```
 
-## Multi-room grouping
+## Multi-room
 
-Lithe LS10 speakers use **Google Cast groups** for synchronised multi-room playback —
-create the group once in the Google Home app and it appears as a separate Cast target
-that Home Assistant's built-in Cast integration handles automatically. This integration
-focuses on per-speaker control; for synchronised whole-home audio, use a Cast group as
-the playback target and use this integration to control individual zones (volume,
-mute, chimes per room, etc.).
+Two options work well alongside this integration:
 
-You can also use the **media_player group** helper in Home Assistant to bundle several
-Lithe entities into one virtual player for simultaneous transport commands without
-audio synchronisation.
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────┐
-│  Home Assistant                                     │
-│                                                     │
-│  ┌─────────────┐   ┌──────────────────────────┐    │
-│  │ media_player│   │  LitheAudioCoordinator   │    │
-│  │ button      │◄──┤  (push-driven, no poll)  │    │
-│  │ switch      │   └────────────┬─────────────┘    │
-│  │ sensor      │                │ DeviceState       │
-│  │ number      │                │ listeners         │
-│  └─────────────┘                │                   │
-│                                 ▼                   │
-│                  ┌──────────────────────────┐      │
-│                  │   LitheAudioClient       │      │
-│                  │   (async LUCI protocol)  │      │
-│                  └──────────┬───────────────┘      │
-└─────────────────────────────┼──────────────────────┘
-                              │ TCP 7777
-                              │ (TLS 1.2 if LS10)
-                              ▼
-                  ┌──────────────────────────┐
-                  │  Lithe Audio Speaker     │
-                  │  (LUCI v15.x firmware)   │
-                  └──────────────────────────┘
-```
-
-The client maintains one persistent socket per speaker. On connect it sends `MB#3`
-(register), then `GET MB#50/51/42/64/63` for the initial state sync, then sits in a
-read loop dispatching pushed state updates. On disconnect it reconnects with
-exponential backoff (2s → 60s) and re-registers automatically.
+- **Google Cast groups** — create a group in the Google Home app (e.g. "Whole
+  House"); it appears as a Cast target that Home Assistant's built-in Cast
+  integration handles. Synchronised audio across all speakers in the group.
+- **Media player group helper** — Home Assistant's built-in helper that bundles
+  several Lithe entities into one virtual player for simultaneous transport
+  commands. Volume and play/pause apply to all members at once (no audio
+  synchronisation, but useful for scenes and automations).
 
 ## Troubleshooting
 
-**Speaker appears unavailable**
-- Check the speaker is on the same subnet as Home Assistant
-- Verify port 7777 is reachable: `nc -zv <speaker-ip> 7777`
-- For LS10, double-check the certificate hasn't been re-formatted (line breaks matter)
+**Speaker shows as unavailable**
+- Verify the speaker is on the same network as Home Assistant
+- Try removing and re-adding the integration; the IP address may have changed
+- For speakers using encrypted connections, re-paste the certificate (line
+  breaks must be preserved exactly)
 
-**Push updates stop arriving**
-- The integration sends a `GET MB#51` keepalive every ~50s; if pushes are lost,
-  enable debug logging:
-  ```yaml
-  logger:
-    logs:
-      custom_components.lithe_audio: debug
-  ```
+**Enable debug logging**
 
-**LS10 handshake fails with `SSL: TLSV1_ALERT_*`**
-- The cert isn't signed by Lithe's CA, or the speaker firmware predates the
-  TLS rollout. Contact Lithe Audio support.
+Add to your `configuration.yaml`:
 
-## Credits
+```yaml
+logger:
+  default: info
+  logs:
+    custom_components.lithe_audio: debug
+```
 
-- Built against the **LUCI v15.x** protocol as documented in:
-  - *Lithe Audio LUCI Integration API — Partner Developer Guide*
-  - *Libre Wireless Technologies LUCI Technical Note v15.0.7*
+Restart Home Assistant and check *Settings → System → Logs* for detailed output.
+
+## Advanced
+
+### Raw command service
+
+The `send_raw_command` service is an escape hatch for power users who want to
+trigger features not exposed as entities. It sends a low-level command directly
+to the speaker. Lithe Audio integration partners can request the full command
+reference from **developer@litheaudio.com**.
+
+### Diagnostics
+
+From the integration's device page in Home Assistant, click *Download
+diagnostics* to get a sanitised state dump suitable for attaching to GitHub
+issues. Certificates, MAC addresses, and serial numbers are automatically
+redacted.
+
+## Support
+
+- **Bugs and feature requests:** open an issue on
+  [GitHub](https://github.com/LitheAudio-Official/home-assistant-integration/issues)
+- **Speaker hardware / certificate requests:** developer@litheaudio.com
 
 ## Licence
 
