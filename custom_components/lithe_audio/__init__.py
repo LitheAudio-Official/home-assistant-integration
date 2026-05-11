@@ -20,7 +20,6 @@ from .const import (
     ATTR_RAW_CMD_TYPE,
     ATTR_RAW_MBID,
     ATTR_RAW_PAYLOAD,
-    CMD_SET,
     CONF_CERT_KEY,
     CONF_CERT_PEM,
     CONF_MAC,
@@ -49,6 +48,11 @@ PLATFORMS: list[Platform] = [
     Platform.SENSOR,
     Platform.SWITCH,
 ]
+
+# This integration is configured exclusively via the UI (config flow). The
+# explicit empty CONFIG_SCHEMA tells hassfest we're aware there's no YAML
+# config schema by design.
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
 @dataclass
@@ -79,7 +83,7 @@ SERVICE_SEND_RAW_SCHEMA = vol.Schema({
     vol.Required("entity_id"): cv.entity_ids,
     vol.Required(ATTR_RAW_MBID): vol.All(int, vol.Range(min=0, max=65535)),
     vol.Required(ATTR_RAW_PAYLOAD): cv.string,
-    vol.Optional(ATTR_RAW_CMD_TYPE, default=CMD_SET): vol.In([0x01, 0x02]),
+    vol.Optional(ATTR_RAW_CMD_TYPE, default="set"): vol.In(["get", "set"]),
 })
 SERVICE_ENTITY_ONLY_SCHEMA = vol.Schema({
     vol.Required("entity_id"): cv.entity_ids,
@@ -129,11 +133,13 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
             await client.async_play_direct(call.data[ATTR_DIRECT_PATH])
 
     async def _svc_send_raw(call: ServiceCall) -> None:
+        cmd_type_map = {"get": 0x01, "set": 0x02}
+        cmd_type = cmd_type_map.get(call.data[ATTR_RAW_CMD_TYPE], 0x02)
         for client in await _resolve_clients(call):
             await client.async_send_raw(
                 call.data[ATTR_RAW_MBID],
                 call.data[ATTR_RAW_PAYLOAD],
-                call.data[ATTR_RAW_CMD_TYPE],
+                cmd_type,
             )
 
     async def _svc_reboot(call: ServiceCall) -> None:
