@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.venv/
+venv/
+.idea/
+.vscode/
+*.egg-info/
+build/
+dist/
+
+# Block stray certs anywhere in the tree by default
+*.pem
+*.key
+
+# ...except the bundled integration certs and any test fixtures
+!custom_components/lithe_audio/certs/*.pem
+!custom_components/lithe_audio/certs/*.key
+!tests/fixtures/*.pem
+!tests/fixtures/*.key

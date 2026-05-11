@@ -31,9 +31,8 @@ All current Lithe Audio network speakers, including:
 - WiFi V2 / PRO
 - Micro Subwoofer
 
-Certain models require a client certificate for the encrypted connection — the
-integration will prompt for it during setup. Contact
-**developer@litheaudio.com** to request your certificate files.
+The integration handles encrypted connections transparently for speaker
+models that require them — no extra setup steps for the installer.
 
 ## Installation
 
@@ -55,10 +54,10 @@ Copy the `custom_components/lithe_audio/` folder into your Home Assistant
 1. Go to *Settings → Devices & services → Add Integration → Lithe Audio*
 2. Choose **Scan network** to find speakers automatically, or **Enter IP
    manually** if you prefer
-3. If your speaker requires a client certificate, you'll be prompted to paste
-   the contents of `client.pem` and `client.key`. The integration tests the
-   connection before saving, so any issue is reported immediately.
-4. Done — entities appear instantly
+3. Confirm — done
+
+Entities appear instantly. The integration tests the connection before
+saving, so any issue is reported immediately.
 
 ## Entities
 
@@ -144,8 +143,7 @@ Two options work well alongside this integration:
 **Speaker shows as unavailable**
 - Verify the speaker is on the same network as Home Assistant
 - Try removing and re-adding the integration; the IP address may have changed
-- For speakers using encrypted connections, re-paste the certificate (line
-  breaks must be preserved exactly)
+- Try restarting the speaker
 
 **Enable debug logging**
 
@@ -180,7 +178,7 @@ redacted.
 
 - **Bugs and feature requests:** open an issue on
   [GitHub](https://github.com/LitheAudio-Official/home-assistant-integration/issues)
-- **Speaker hardware / certificate requests:** developer@litheaudio.com
+- **Hardware support:** developer@litheaudio.com
 
 ## Licence
 
