@@ -15,7 +15,7 @@
     {
       "type": "_googlecast._tcp.local.",
       "properties": {
-        "md": "Lithe*"
+        "md": "lithe*"
       }
     }
   ]
