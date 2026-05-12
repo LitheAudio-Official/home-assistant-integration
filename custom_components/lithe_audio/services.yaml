@@ -1,6 +1,8 @@
 play_chime:
   name: Play Chime
-  description: Play a built-in chime on a Lithe Audio speaker.
+  description: >-
+    Play a built-in chime on a Lithe Audio speaker. Two vendor-documented
+    methods are supported — pick whichever the speaker firmware accepts.
   target:
     entity:
       domain: media_player
@@ -8,13 +10,25 @@ play_chime:
   fields:
     chime_number:
       name: Chime Number
-      description: "Chime to play. PRO2/V3: 1-15. iO1/V2: 1-10. PRO: 1-6."
+      description: "Chime to play. PRO2: 1-15. V3/iO1: 1-10. PRO: 1-6."
       required: true
       selector:
         number:
           min: 1
           max: 15
           mode: box
+    method:
+      name: Method
+      description: >-
+        "Indexed" sends MB#80 "play N" (default — lightweight, no side effects).
+        "Direct" sends MB#41 PLAYITEM:DIRECT:/system/usr/songN.mp3 (vendor
+        Method 2 — use this if a slot won't play via the indexed method).
+      default: "Indexed"
+      selector:
+        select:
+          options:
+            - Indexed
+            - Direct
 
 play_url:
   name: Play URL

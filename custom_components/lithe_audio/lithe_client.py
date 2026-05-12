@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from .const import (
-    DEFAULT_PORT, MB_BLUETOOTH, MB_BROWSE, MB_BT_STATUS, MB_CHIME,
+    DEFAULT_PORT, MB_AUDIOCUE, MB_BLUETOOTH, MB_BROWSE, MB_BT_STATUS, MB_CHIME,
     MB_DEVICE_INFO, MB_DEVICE_NAME, MB_DSP, MB_FACTORY_RESET, MB_FAVOURITES,
     MB_FIRMWARE, MB_MUTE, MB_NETWORK_INFO, MB_NOW_PLAYING, MB_PLAY_STATE,
     MB_PLAYBACK_AUTH, MB_POSITION, MB_REBOOT_REQ, MB_REGISTER, MB_SOURCE,
@@ -230,20 +230,23 @@ class LitheClient:
         await self._send(0x02, MB_DEVICE_NAME, name)
 
     async def async_play_chime(self, chime_number: int) -> None:
-        """Trigger an embedded cue (song1..song15).
+        """Trigger an embedded audiocue via MB#80.
 
-        Restores the proven-working morning behaviour:
-          - Slots 1-9 → MB#80 ``play N`` (canonical cue trigger)
-          - Slots 10-15 → MB#41 ``PLAYITEM:DIRECT:/system/usr/songN.mp3``
-            because some firmware revisions hardcode the MB#80 parser to
-            single-digit indices only. The MB#41 DIRECT path reaches the
-            same files via the browse engine and handles arbitrary paths.
+        Per Lithe vendor docs for newer firmware (CR443GP_3713+):
+          - Send `play N` on MB#80 (1..15)
+          - Speaker emits MB#82 "AUDIOCUE_START" notification, then
+            auto-pauses any active music and opens the audio path
+          - Speaker plays /system/usr/songN.mp3
+          - Speaker emits MB#82 "SUCCESS" or "FAILURE"
+          - Music auto-resumes (no host involvement required)
+
+        We DO NOT use the MB#41 PLAYITEM:DIRECT fallback because on this
+        firmware it triggers an MB#10 HOST MCU Playback Auth request
+        which we cannot answer (sending MB#11 stops playback) and the
+        unanswered auth tears down active Spotify Connect sessions.
         """
         n = max(1, min(15, int(chime_number)))
-        if n <= 9:
-            await self._send(0x02, MB_CHIME, f"play {n}")
-        else:
-            await self._send(0x02, MB_BROWSE, f"PLAYITEM:DIRECT:/system/usr/song{n}.mp3")
+        await self._send(0x02, MB_CHIME, f"play {n}")
 
     async def async_bluetooth(self, command: str) -> None:
         """BT command: ON / OFF / ENTPAIR / DISCONNECT."""
@@ -356,7 +359,7 @@ class LitheClient:
         # Debug visibility of every push — invaluable for diagnosing missing
         # state, wrong JSON keys, unexpected MB# numbers, etc.
         if _LOGGER.isEnabledFor(logging.DEBUG):
-            preview = payload[:200] + ("…" if len(payload) > 200 else "")
+            preview = payload[:800] + ("…" if len(payload) > 800 else "")
             _LOGGER.debug("RX MB#%d (%d bytes): %s", mbid, len(payload), preview)
 
         changed = True
@@ -425,19 +428,64 @@ class LitheClient:
             self._parse_favourites(payload)
 
         elif mbid == MB_CHIME:
-            # Speaker's response to our chime play command.
-            # SUCCESS = audio played, NI = "Not Installed" (slot empty),
-            # FILE_NOT_FOUND = legacy variant of NI on some firmwares.
-            r = payload.strip().upper()
-            if r in ("NI", "FILE_NOT_FOUND"):
-                _LOGGER.warning(
-                    "Chime command returned '%s' — that slot has no audio "
-                    "installed on the speaker. Upload a cue to the slot via "
-                    "the Lithe portal/app before triggering it from HA.",
-                    payload.strip(),
+            # Chime response semantics differ between platforms:
+            #
+            #   LS10 (newer, TLS): MB#80 ACK is informational only. The real
+            #                       chime lifecycle is on MB#82 (AUDIOCUE_START,
+            #                       SUCCESS, FAILURE). Treat MB#80 ACK as noise.
+            #
+            #   LS9  (older, plain): MB#80 carries the actual status. SUCCESS
+            #                        means audio played; NI/FILE_NOT_FOUND
+            #                        means the slot is empty on the device.
+            r = payload.strip()
+            ru = r.upper()
+            if ru in ("NI", "FILE_NOT_FOUND"):
+                if self.use_tls:
+                    # LS10 — actual status is coming via MB#82, log as debug
+                    _LOGGER.debug(
+                        "MB#80 ACK '%s' (LS10 — real status will arrive on MB#82)",
+                        r,
+                    )
+                else:
+                    # LS9 — this is the real failure. Slot is empty on device.
+                    _LOGGER.warning(
+                        "Chime command returned '%s' — that slot has no audio "
+                        "installed on this LS9 speaker. Upload a cue to the slot "
+                        "via the Lithe portal/app before triggering it from HA.",
+                        r,
+                    )
+            elif ru and ru != "SUCCESS":
+                _LOGGER.debug("Chime MB#80 response: %s", r)
+
+        elif mbid == MB_AUDIOCUE:
+            # Newer-firmware audiocue lifecycle (per Lithe vendor docs).
+            # Speaker→host notifications:
+            #   AUDIOCUE_START — chime starting, speaker auto-pauses music
+            #   SUCCESS        — chime finished playing, music will resume
+            #   FAILURE / NI   — slot empty or playback failed
+            r = payload.strip()
+            ru = r.upper()
+            if "START" in ru:
+                _LOGGER.info(
+                    "Audiocue starting — speaker is auto-pausing music for the chime."
                 )
-            elif r and r != "SUCCESS":
-                _LOGGER.debug("Chime response: %s", payload.strip())
+                # Optimistic state: speaker is about to fire the chime.
+                # We don't model "chime playing" as a separate state because
+                # the speaker auto-resumes; HA will see the actual play_state
+                # transitions via MB#51 pushes.
+            elif ru in ("NI", "FILE_NOT_FOUND", "FAILURE", "FAIL"):
+                _LOGGER.warning(
+                    "Audiocue failed: '%s'. The slot may be empty or the "
+                    "speaker is in a state that won't allow chime playback "
+                    "(e.g. mid-handoff). Try again after the current source "
+                    "has fully started, or upload audio to that slot via the "
+                    "Lithe portal/app.",
+                    r,
+                )
+            elif ru == "SUCCESS":
+                _LOGGER.debug("Audiocue completed successfully.")
+            else:
+                _LOGGER.debug("MB#82 audiocue notification: %s", r)
 
         elif mbid == MB_DSP:
             # Payload is binary DSP sub-packet(s). Decode for visibility.

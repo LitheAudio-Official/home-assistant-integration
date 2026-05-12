@@ -88,6 +88,12 @@ MB_MUTE           = 63
 MB_VOLUME         = 64
 MB_FAVOURITES     = 70
 MB_CHIME          = 80
+MB_AUDIOCUE       = 82   # NEW: Audiocue lifecycle notifications (newer firmware)
+                          # Speaker→host. Payloads observed:
+                          #   "AUDIOCUE_START"  — chime is about to play,
+                          #                       speaker pauses any music
+                          #   "SUCCESS"         — chime finished, music resumes
+                          #   "FAILURE" / "NI"  — slot empty or playback failed
 MB_DEVICE_NAME    = 90
 MB_NETWORK_INFO   = 91
 MB_DSP            = 112
@@ -131,13 +137,15 @@ BT_DISC    = "DISCONNECT"
 
 # ── DSP sub-MB IDs (LS10 MB#112 tunnel) ─────────────────────────────────────
 # Confirmed from live capture: PRO2 firmware CR443GP_3713
-DSP_EQ        = 0x0A   # 0=Normal 1=Acoustic 2=Jazz 3=Pop 4=HipHop
-DSP_LOUDNESS  = 0x16   # PRO2: signed byte -10..+10  |  V3/iO1: 0=OFF 1=ON
-DSP_NIGHTMODE = 0x18   # 0=OFF 1=ON
-DSP_HIGHPASS  = 0x1A   # 0=OFF 1=60Hz 2=80Hz 3=100Hz 4=120Hz  (PRO2 only)
-DSP_OUTPUT    = 0x1C   # 0=Stereo 1=Mono 2=Left 3=Right
-DSP_TUNING    = 0x1D   # 0=13L Enclosure 1=Open Back  (PRO2 only)
-DSP_BALANCE   = 0x1E   # signed byte -6..+6  (UNCONFIRMED — needs sniffer)
+# ── DSP sub-MB IDs (tunneled inside MB#112) ─────────────────────────────────
+# Verified against real firmware CR443GP_3713 packet captures.
+DSP_EQ        = 0x0A   # 0=Normal 1=Acoustic 2=Jazz 3=Pop 4=HipHop (confirmed)
+DSP_OUTPUT    = 0x09   # 0=Stereo 1=Mono 2=Left 3=Right (firmware uses values 2-6)
+DSP_NIGHTMODE = 0x0C   # 0=OFF 1=ON (toggle observed in capture)
+DSP_LOUDNESS  = 0x0D   # PRO2: signed byte -10..+10  |  V3/iO1: 0=OFF 1=ON (toggle observed)
+DSP_HIGHPASS  = 0x0F   # 0=OFF 1=60Hz 2=80Hz 3=100Hz 4=120Hz (toggle observed at 0x0F)
+DSP_TUNING    = 0x15   # 0=13L Enclosure 1=Open Back  (PRO2 only, observed at 0x15)
+DSP_BALANCE   = 0x29   # signed byte -6..+6  (observed at 0x29)
 
 EQ_PRESETS  = ["Normal", "Acoustic", "Jazz", "Pop", "Hip-Hop"]
 HP_OPTIONS  = ["OFF", "60Hz", "80Hz", "100Hz", "120Hz"]

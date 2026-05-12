@@ -212,8 +212,15 @@ def _register_services(hass: HomeAssistant) -> None:
 
     # ── Playback / chime ────────────────────────────────────────────────
     async def svc_play_chime(call: ServiceCall) -> None:
-        n = int(call.data.get("chime_number", 1))
-        await _for_each(call, lambda c: c.async_play_chime(max(1, min(n, 15))))
+        n = max(1, min(int(call.data.get("chime_number", 1)), 15))
+        method = str(call.data.get("method", "Indexed")).strip().lower()
+        if method.startswith("direct"):
+            # Method 2: MB#41 PLAYITEM:DIRECT:/system/usr/songN.mp3
+            path = f"/system/usr/song{n}.mp3"
+            await _for_each(call, lambda c: c.async_play_url(path))
+        else:
+            # Method 1: MB#80 "play N"  (default)
+            await _for_each(call, lambda c: c.async_play_chime(n))
 
     async def svc_play_url(call: ServiceCall) -> None:
         url = str(call.data.get("url", "")).strip()
