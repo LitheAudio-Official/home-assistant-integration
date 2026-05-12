@@ -1,185 +1,199 @@
-# Lithe Audio for Home Assistant
+# Lithe Audio — Home Assistant Integration
 
-The official Home Assistant integration for [Lithe Audio](https://litheaudio.com)
-speakers. Control playback, volume, sources, chimes, and presets directly from
-Home Assistant — local-only, no cloud, no polling delays. State updates appear in
-Home Assistant instantly because the speaker pushes them.
+Direct, local control of Lithe Audio WiFi speakers over the LUCI protocol on port 7777. No cloud, no bridge process, no portal — Home Assistant talks to each speaker directly.
 
-## Features
+**Version 1.1.0** — adds buttons, browse, tannoy/PA, prayer scheduler, Cast groups.
 
-- **Playback** — play, pause, stop, next, previous, seek
-- **Volume & mute** — full 0-100% control with smooth slider response
-- **Now-playing metadata** — title, artist, album, album art
-- **Source detection** — Spotify, AirPlay, Tidal, Cast, Bluetooth, AUX, and more
-- **Built-in chimes** — doorbell, alarm, notification tones triggered as Home
-  Assistant buttons or via the `play_chime` service
-- **Favourites / presets** — save and recall playback by slot (1-9)
-- **AUX line-in and Bluetooth** — switch inputs from automations
-- **Multi-room** — works alongside Home Assistant's media player group helper
-  and Google Cast groups for synchronised playback
-- **Auto-discovery** — speakers appear in Home Assistant automatically when
-  detected on the local network
-- **Secure** — encrypted connection (required by certain models) is fully
-  handled by the integration
+---
 
 ## Supported speakers
 
-All current Lithe Audio network speakers, including:
+| Product | Platform | TLS | Chimes | EQ/DSP | Bluetooth |
+|---|---|---|---|---|---|
+| WiFi PRO 2 | LS10 | ✅ | 15 | Full | ✅ |
+| WiFi Speaker V3 | LS10 | ✅ | 15 | EQ, Output | ✅ |
+| iO1 | LS10 | ✅ | 10 | EQ, Output | — |
+| WiFi Speaker V2 | LS9 | — | 10 | — | ✅ |
+| WiFi PRO | LS9 | — | 6 | — | — |
+| Micro Subwoofer | LS9 | — | 0 | — | — |
 
-- PRO2 (in-ceiling)
-- WiFi V3 / iO1
-- WiFi V2 / PRO
-- Micro Subwoofer
+LS10 speakers require a client cert (`client.pem`, `client.key`). LS9 speakers connect plain-TCP.
 
-The integration handles encrypted connections transparently for speaker
-models that require them — no extra setup steps for the installer.
+---
 
 ## Installation
 
-### Via HACS (recommended)
+### HACS (recommended)
 
-1. In HACS go to *Integrations*, click the three-dot menu → *Custom repositories*
-2. Paste this repository's URL, category *Integration*
-3. Search for **Lithe Audio** in HACS and install
-4. Restart Home Assistant
-5. *Settings → Devices & services → Add Integration → Lithe Audio*
+1. HACS → Integrations → ⋮ → **Custom repositories**
+2. Add `https://github.com/litheaudio/ha-lithe-audio` as category **Integration**
+3. Search for **Lithe Audio**, install, restart Home Assistant.
+4. **Settings → Devices & Services → Add Integration → Lithe Audio**.
 
-### Manual install
+### Manual
 
-Copy the `custom_components/lithe_audio/` folder into your Home Assistant
-`<config>/custom_components/` directory and restart Home Assistant.
+Copy `custom_components/lithe_audio/` into your HA `config/custom_components/` and restart.
 
-## Setup
+For LS10 speakers (PRO2, V3, iO1), place `client.pem` and `client.key` somewhere readable by HA (e.g. `/config/lithe_certs/`) and enter the full paths in the config flow.
 
-1. Go to *Settings → Devices & services → Add Integration → Lithe Audio*
-2. Choose **Scan network** to find speakers automatically, or **Enter IP
-   manually** if you prefer
-3. Confirm — done
+---
 
-Entities appear instantly. The integration tests the connection before
-saving, so any issue is reported immediately.
+## Entities created
 
-## Entities
+Per speaker, depending on capability:
 
-Each speaker creates one device with these entities:
+- **`media_player.<name>`** — transport, volume/mute, source list, now-playing, browse (favourites), `play_media` accepts direct URLs.
+- **`button.<name>_chime_N`** — one per chime slot (N=1..15 for PRO2/V3, 1..10 for iO1/V2, 1..6 for PRO).
+- **`button.<name>_reboot`**, **`button.<name>_factory_reset`** — diagnostic.
+- **`select.<name>_eq_preset`** — Normal/Acoustic/Jazz/Pop/Hip-Hop (LS10 only).
+- **`select.<name>_speaker_output`** — Stereo/Mono/Left/Right (LS10 only).
+- **`select.<name>_high_pass_filter`** — Off/60/80/100/120 Hz (PRO2 only).
+- **`select.<name>_speaker_tuning`** — 13L Enclosure / Open Back (PRO2 only).
+- **`number.<name>_loudness`** — slider -10..+10 dB (PRO2 only).
+- **`number.<name>_balance`** — slider -6..+6 (LS10 only).
+- **`switch.<name>_night_mode`** — (LS10 only).
+- **`switch.<name>_loudness`** — on/off for V3/iO1.
+- **`switch.<name>_bluetooth`** — on/off for PRO2/V3.
+- **`sensor.<name>_active_source`**, **`firmware`**, **`mac_address`**, **`wifi_band`**, **`timezone`**, **`uptime`** — diagnostics.
 
-| Entity                   | What it does                                          |
-| ------------------------ | ----------------------------------------------------- |
-| `media_player.*`         | Main control — play, pause, volume, source, metadata  |
-| `switch.mute`            | Mute toggle for automations                           |
-| `switch.line_in`         | Enable / disable AUX or line-in input                 |
-| `switch.bluetooth`       | Enable Bluetooth receiver mode                         |
-| `sensor.source`          | Current audio source (Spotify, AirPlay, etc.)         |
-| `sensor.now_playing`     | "Artist — Title" for easy automation triggers          |
-| `sensor.firmware`        | Speaker firmware version (diagnostic)                 |
-| `button.chime_1..15`     | One button per built-in chime (count varies by model) |
-| `button.preset_1..9`     | One-tap recall of saved favourites                    |
-| `button.reboot`          | Restart the speaker                                   |
-| `number.volume`          | Alternate volume slider (disabled by default)         |
+---
 
 ## Services
 
-| Service                          | Use case                                            |
-| -------------------------------- | --------------------------------------------------- |
-| `lithe_audio.play_chime`         | Doorbell, alarm, scheduled announcement              |
-| `lithe_audio.play_preset`        | One-tap radio / playlist recall                     |
-| `lithe_audio.save_preset`        | Capture current playback into a slot                |
-| `lithe_audio.delete_preset`      | Clear a slot                                        |
-| `lithe_audio.play_direct`        | Stream a URL or play a built-in file                 |
-| `lithe_audio.send_raw_command`   | Advanced control (see Advanced section below)        |
-| `lithe_audio.reboot`             | Restart the speaker                                 |
+| Service | Purpose |
+|---|---|
+| `lithe_audio.play_chime` | Play chime slot N |
+| `lithe_audio.play_url` | Push a direct audio URL |
+| `lithe_audio.play_favourite` | Play a saved favourite |
+| `lithe_audio.set_name` | Rename the speaker |
+| `lithe_audio.set_dsp_eq` | Set EQ preset |
+| `lithe_audio.set_dsp_output` | Stereo / Mono / Left / Right |
+| `lithe_audio.set_dsp_nightmode` | Toggle Night Mode |
+| `lithe_audio.set_dsp_highpass` | HPF frequency |
+| `lithe_audio.set_dsp_balance` | -6..+6 balance |
+| `lithe_audio.set_dsp_loudness` | -10..+10 dB / on-off |
+| `lithe_audio.bluetooth_pair` | Enter BT pairing mode |
+| `lithe_audio.bluetooth_disconnect` | Drop active BT |
+| `lithe_audio.reboot` | Reboot the speaker (~45 s) |
+| `lithe_audio.play_group` | Cast to a group UUID + sync LUCI volume on members |
+| `lithe_audio.set_prayer_schedule` | Schedule daily prayer announcements via Aladhan API |
+| `notify.lithe_tannoy` | PA / tannoy override: save state, pause, play URL, restore |
 
-### Example — doorbell automation
+---
+
+## Tannoy / PA example
 
 ```yaml
 automation:
-  - alias: "Front door chime"
+  - alias: "PA Announcement"
     trigger:
-      - platform: state
-        entity_id: binary_sensor.front_door_button
-        to: "on"
+      platform: state
+      entity_id: input_boolean.pa_active
+      to: "on"
     action:
-      - service: lithe_audio.play_chime
-        target:
-          entity_id:
-            - media_player.living_room
-            - media_player.kitchen
+      service: notify.lithe_tannoy
+      data:
+        message: "http://192.168.1.100/announcement.mp3"
         data:
-          chime_index: 1
+          mode: start
+          volume: 80
+          speakers:
+            - 192.168.1.38
+            - 192.168.1.17
+            - 192.168.1.133
+
+  - alias: "PA End"
+    trigger:
+      platform: state
+      entity_id: input_boolean.pa_active
+      to: "off"
+    action:
+      service: notify.lithe_tannoy
+      data:
+        message: ""
+        data:
+          mode: end
+          speakers:
+            - 192.168.1.38
+            - 192.168.1.17
+            - 192.168.1.133
 ```
 
-### Example — morning radio
+---
+
+## Prayer schedule example
 
 ```yaml
-script:
-  morning_radio:
-    sequence:
-      - service: lithe_audio.play_preset
-        target:
-          entity_id: media_player.kitchen
-        data:
-          preset_slot: 1
-      - service: media_player.volume_set
-        target:
-          entity_id: media_player.kitchen
-        data:
-          volume_level: 0.35
+service: lithe_audio.set_prayer_schedule
+data:
+  city: "London"
+  country: "GB"
+  method: 2
+  entries:
+    - prayer: "fajr"
+      speakers: ["192.168.1.38", "192.168.1.17"]
+      url: "http://192.168.1.100/adhan.mp3"
+      volume: 70
+      days: "daily"
+    - prayer: "dhuhr"
+      speakers: ["192.168.1.38"]
+      url: "http://192.168.1.100/adhan_short.mp3"
+      volume: 60
+      days: "friday"
 ```
 
-## Multi-room
+The integration re-fetches today's prayer times daily at 00:01 local time.
 
-Two options work well alongside this integration:
+---
 
-- **Google Cast groups** — create a group in the Google Home app (e.g. "Whole
-  House"); it appears as a Cast target that Home Assistant's built-in Cast
-  integration handles. Synchronised audio across all speakers in the group.
-- **Media player group helper** — Home Assistant's built-in helper that bundles
-  several Lithe entities into one virtual player for simultaneous transport
-  commands. Volume and play/pause apply to all members at once (no audio
-  synchronisation, but useful for scenes and automations).
-
-## Troubleshooting
-
-**Speaker shows as unavailable**
-- Verify the speaker is on the same network as Home Assistant
-- Try removing and re-adding the integration; the IP address may have changed
-- Try restarting the speaker
-
-**Enable debug logging**
-
-Add to your `configuration.yaml`:
+## Cast group example
 
 ```yaml
-logger:
-  default: info
-  logs:
-    custom_components.lithe_audio: debug
+service: lithe_audio.play_group
+data:
+  leader_ip:   "192.168.1.38"
+  uuid:        "b63105f8-3da3-a238-b85f-69bb61416a71"
+  url:         "http://192.168.1.100/track.mp3"
+  content_type: "audio/mp3"
+  volume:      65
+  member_ips:
+    - 192.168.1.38
+    - 192.168.1.17
 ```
 
-Restart Home Assistant and check *Settings → System → Logs* for detailed output.
+For everyday group playback, also enable the built-in **Cast** integration alongside this one — it discovers the group's Chromecast endpoint automatically.
 
-## Advanced
+---
 
-### Raw command service
+## Protocol notes
 
-The `send_raw_command` service is an escape hatch for power users who want to
-trigger features not exposed as entities. It sends a low-level command directly
-to the speaker. Lithe Audio integration partners can request the full command
-reference from **developer@litheaudio.com**.
+- LS10 = TLS 1.2 only (not 1.3). Registration payload **must** use the literal key `APP_info` with capital `APP_` — lowercase silently fails and the speaker stops pushing state.
+- LS9 registration is a plain IP string, no JSON wrapper.
+- TX uses little-endian for MBID and DataLen; RX is big-endian.
+- Never respond to MB#10 (HOST MCU Playback Auth) — sending MB#11 from a network client stops playback.
+- After registration, wait ~400 ms before sending the first command.
+- DSP commands tunnel through MB#112 with a 6-byte sub-packet.
 
-### Diagnostics
+See `lithe_ha_integration_spec.md` for the full protocol reference.
 
-From the integration's device page in Home Assistant, click *Download
-diagnostics* to get a sanitised state dump suitable for attaching to GitHub
-issues. Certificates, MAC addresses, and serial numbers are automatically
-redacted.
+---
 
-## Support
+## Changelog
 
-- **Bugs and feature requests:** open an issue on
-  [GitHub](https://github.com/LitheAudio-Official/home-assistant-integration/issues)
-- **Hardware support:** developer@litheaudio.com
+### 1.1.0
+- **NEW** Button platform — chime buttons (one per slot, per-product gated), Reboot, Factory Reset.
+- **NEW** Tannoy / PA override (`notify.lithe_tannoy`).
+- **NEW** Prayer scheduler (`lithe_audio.set_prayer_schedule`).
+- **NEW** Cast-group casting (`lithe_audio.play_group`).
+- **NEW** `media_player.play_media` accepts direct URLs.
+- **NEW** `media_player.browse_media` exposes favourites.
+- **NEW** `play_url`, `play_favourite`, `set_name` services.
+- **FIX** SOURCES table corrected to match LUCI API v15.0.7.
+- **FIX** Reboot now uses MB#114 (was incorrectly MB#37).
+- **FIX** PLAY_STATES map now handles 4=receiving and 5=buffering.
+- **FIX** `remove_callback` no longer raises on list.
+- **FIX** `select_source` now sends MB#50 SET instead of being a stub.
+- **FIX** SEEK feature flag is now dynamic — removed for live streams.
 
-## Licence
-
-MIT — see [LICENSE](LICENSE).
+### 1.0.0
+- Initial release: media_player, select, number, switch, sensor entities; DSP control; chime/Bluetooth/reboot services.
