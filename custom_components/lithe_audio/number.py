@@ -9,8 +9,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
-    CONF_PRODUCT, DATA_COORDINATOR, DOMAIN, DSP_BALANCE, DSP_LOUDNESS,
-    LS10_PRODUCTS, PRODUCT_PRO2,
+    CONF_PRODUCT, DATA_COORDINATOR, DOMAIN, DSP_BALANCE, DSP_LOUDNESS, caps,
 )
 from .coordinator import LitheAudioCoordinator
 
@@ -22,19 +21,16 @@ async def async_setup_entry(
 ) -> None:
     coordinator: LitheAudioCoordinator = hass.data[DOMAIN][entry.entry_id][DATA_COORDINATOR]
     product = entry.data[CONF_PRODUCT]
+    c = caps(product)
 
-    if product not in LS10_PRODUCTS:
-        return
-
-    entities: list[NumberEntity] = [
-        LitheBalanceNumber(coordinator, entry),
-    ]
-
-    # PRO2 only: loudness slider -10 to +10 dB
-    if product == PRODUCT_PRO2:
+    entities: list[NumberEntity] = []
+    if c["balance_number"]:
+        entities.append(LitheBalanceNumber(coordinator, entry))
+    if c["loudness_number"]:
         entities.append(LitheLoudnessNumber(coordinator, entry))
 
-    async_add_entities(entities)
+    if entities:
+        async_add_entities(entities)
 
 
 class _LitheBaseNumber(CoordinatorEntity[LitheAudioCoordinator], NumberEntity):

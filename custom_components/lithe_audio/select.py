@@ -11,7 +11,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import (
     CONF_PRODUCT, DATA_COORDINATOR, DOMAIN,
     DSP_EQ, DSP_HIGHPASS, DSP_OUTPUT, DSP_TUNING,
-    EQ_PRESETS, HP_OPTIONS, LS10_PRODUCTS, OUT_OPTIONS, PRODUCT_PRO2,
+    EQ_PRESETS, HP_OPTIONS, OUT_OPTIONS, caps,
 )
 from .coordinator import LitheAudioCoordinator
 
@@ -23,22 +23,20 @@ async def async_setup_entry(
 ) -> None:
     coordinator: LitheAudioCoordinator = hass.data[DOMAIN][entry.entry_id][DATA_COORDINATOR]
     product = entry.data[CONF_PRODUCT]
+    c = caps(product)
 
-    if product not in LS10_PRODUCTS:
-        return
+    entities: list[SelectEntity] = []
+    if c["eq_select"]:
+        entities.append(LitheEqSelect(coordinator, entry))
+    if c["output_select"]:
+        entities.append(LitheOutputSelect(coordinator, entry))
+    if c["highpass_select"]:
+        entities.append(LitheHighPassSelect(coordinator, entry))
+    if c["tuning_select"]:
+        entities.append(LitheTuningSelect(coordinator, entry))
 
-    entities: list[SelectEntity] = [
-        LitheEqSelect(coordinator, entry),
-        LitheOutputSelect(coordinator, entry),
-    ]
-
-    if product == PRODUCT_PRO2:
-        entities += [
-            LitheHighPassSelect(coordinator, entry),
-            LitheTuningSelect(coordinator, entry),
-        ]
-
-    async_add_entities(entities)
+    if entities:
+        async_add_entities(entities)
 
 
 class _LitheBaseSelect(CoordinatorEntity[LitheAudioCoordinator], SelectEntity):

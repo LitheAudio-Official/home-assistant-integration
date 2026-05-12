@@ -146,12 +146,119 @@ OUT_OPTIONS = ["Stereo", "Mono", "Left", "Right"]
 # ── Per-product chime counts ────────────────────────────────────────────────
 PRODUCT_CHIMES = {
     PRODUCT_PRO2:  15,
-    PRODUCT_V3:    15,
+    PRODUCT_V3:    6,
     PRODUCT_IO1:   10,
-    PRODUCT_V2:    10,
+    PRODUCT_V2:    0,
     PRODUCT_PRO:   6,
     PRODUCT_MICRO: 0,
 }
+
+# ── Per-product capability matrix ───────────────────────────────────────────
+# Single source of truth for which entities get created per product.
+# Every entity platform reads from this — no scattered ``if product in (…)``
+# checks anywhere else.
+#
+# Capability keys:
+#   chimes           — number of chime slots (0 = no chime buttons)
+#   eq_select        — EQ preset selector
+#   output_select    — Stereo/Mono/Left/Right selector
+#   highpass_select  — HPF frequency selector (PRO2 only)
+#   tuning_select    — 13L Enclosure / Open Back (PRO2 only)
+#   balance_number   — -6..+6 balance slider
+#   loudness_number  — -10..+10 dB slider (PRO2 only)
+#   loudness_switch  — on/off loudness (V3/iO1/V2/PRO)
+#   nightmode_switch — Night Mode on/off
+#   bluetooth_switch — BT on/off + pair/disconnect (all products)
+PRODUCT_CAPS = {
+    PRODUCT_PRO2: {
+        "chimes":           15,
+        "eq_select":        True,
+        "output_select":    True,
+        "highpass_select":  True,
+        "tuning_select":    True,
+        "balance_number":   True,
+        "loudness_number":  True,
+        "loudness_switch":  False,
+        "nightmode_switch": True,
+        "bluetooth_switch": True,
+    },
+    PRODUCT_V3: {
+        "chimes":           6,
+        "eq_select":        True,
+        "output_select":    True,
+        "highpass_select":  False,
+        "tuning_select":    False,
+        "balance_number":   True,
+        "loudness_number":  False,
+        "loudness_switch":  True,
+        "nightmode_switch": True,
+        "bluetooth_switch": True,
+    },
+    PRODUCT_IO1: {
+        "chimes":           10,
+        "eq_select":        True,
+        "output_select":    True,
+        "highpass_select":  False,
+        "tuning_select":    False,
+        "balance_number":   True,
+        "loudness_number":  False,
+        "loudness_switch":  True,
+        "nightmode_switch": True,
+        "bluetooth_switch": True,
+    },
+    PRODUCT_V2: {
+        "chimes":           0,
+        "eq_select":        True,
+        "output_select":    True,
+        "highpass_select":  False,
+        "tuning_select":    False,
+        "balance_number":   True,
+        "loudness_number":  False,
+        "loudness_switch":  True,
+        "nightmode_switch": True,
+        "bluetooth_switch": True,
+    },
+    PRODUCT_PRO: {
+        "chimes":           6,
+        "eq_select":        True,
+        "output_select":    True,
+        "highpass_select":  False,
+        "tuning_select":    False,
+        "balance_number":   True,
+        "loudness_number":  False,
+        "loudness_switch":  True,
+        "nightmode_switch": True,
+        "bluetooth_switch": True,
+    },
+    PRODUCT_MICRO: {
+        "chimes":           0,
+        "eq_select":        False,
+        "output_select":    False,
+        "highpass_select":  False,
+        "tuning_select":    False,
+        "balance_number":   False,
+        "loudness_number":  False,
+        "loudness_switch":  False,
+        "nightmode_switch": False,
+        "bluetooth_switch": True,    # BT on; no DSP for now
+    },
+}
+
+
+def caps(product: str) -> dict:
+    """Return the capability dict for a product, or an all-False dict."""
+    return PRODUCT_CAPS.get(product, {
+        "chimes":           0,
+        "eq_select":        False,
+        "output_select":    False,
+        "highpass_select":  False,
+        "tuning_select":    False,
+        "balance_number":   False,
+        "loudness_number":  False,
+        "loudness_switch":  False,
+        "nightmode_switch": False,
+        "bluetooth_switch": False,
+    })
 
 # ── LSSDP discovery ─────────────────────────────────────────────────────────
 LSSDP_MULTICAST_ADDR = "239.255.255.250"

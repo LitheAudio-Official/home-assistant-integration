@@ -9,8 +9,8 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
-    BT_DISC, BT_OFF, BT_ON, CONF_PRODUCT, DATA_COORDINATOR, DOMAIN,
-    DSP_LOUDNESS, DSP_NIGHTMODE, LS10_PRODUCTS, PRODUCT_IO1, PRODUCT_PRO2, PRODUCT_V3,
+    BT_OFF, BT_ON, CONF_PRODUCT, DATA_COORDINATOR, DOMAIN,
+    DSP_LOUDNESS, DSP_NIGHTMODE, caps,
 )
 from .coordinator import LitheAudioCoordinator
 
@@ -22,23 +22,18 @@ async def async_setup_entry(
 ) -> None:
     coordinator: LitheAudioCoordinator = hass.data[DOMAIN][entry.entry_id][DATA_COORDINATOR]
     product = entry.data[CONF_PRODUCT]
+    c = caps(product)
 
-    if product not in LS10_PRODUCTS:
-        return
-
-    entities: list[SwitchEntity] = [
-        LitheNightModeSwitch(coordinator, entry),
-    ]
-
-    # V3 and iO1: loudness is on/off
-    if product in (PRODUCT_V3, PRODUCT_IO1):
+    entities: list[SwitchEntity] = []
+    if c["nightmode_switch"]:
+        entities.append(LitheNightModeSwitch(coordinator, entry))
+    if c["loudness_switch"]:
         entities.append(LitheLoudnessSwitch(coordinator, entry))
-
-    # PRO2 and V3 have Bluetooth
-    if product in (PRODUCT_PRO2, PRODUCT_V3):
+    if c["bluetooth_switch"]:
         entities.append(LitheBluetoothSwitch(coordinator, entry))
 
-    async_add_entities(entities)
+    if entities:
+        async_add_entities(entities)
 
 
 class _LitheBaseSwitch(CoordinatorEntity[LitheAudioCoordinator], SwitchEntity):
@@ -89,7 +84,7 @@ class LitheNightModeSwitch(_LitheBaseSwitch):
 
 
 class LitheLoudnessSwitch(_LitheBaseSwitch):
-    """Loudness ON/OFF switch for V3 and iO1."""
+    """Loudness ON/OFF switch (V3, iO1, V2, PRO)."""
 
     _attr_name = "Loudness"
     _attr_icon = "mdi:volume-plus"
@@ -110,7 +105,7 @@ class LitheLoudnessSwitch(_LitheBaseSwitch):
 
 
 class LitheBluetoothSwitch(_LitheBaseSwitch):
-    """Bluetooth enable/disable switch."""
+    """Bluetooth enable/disable switch (all products)."""
 
     _attr_name = "Bluetooth"
     _attr_icon = "mdi:bluetooth"
