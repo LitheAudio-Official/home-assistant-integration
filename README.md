@@ -34,7 +34,23 @@ LS10 speakers require a client cert (`client.pem`, `client.key`). LS9 speakers c
 
 Copy `custom_components/lithe_audio/` into your HA `config/custom_components/` and restart.
 
-For LS10 speakers (PRO2, V3, iO1), place `client.pem` and `client.key` somewhere readable by HA (e.g. `/config/lithe_certs/`) and enter the full paths in the config flow.
+> **No certificates required.** The Lithe-issued client cert (`client.pem` + `client.key`) is bundled with the integration in `custom_components/lithe_audio/certs/`. LS10 speakers use it automatically; LS9 speakers don't need one.
+
+### Adding speakers
+
+1. **Settings → Devices & Services → Add Integration → Lithe Audio**.
+2. Choose **Scan network for speakers** (uses LSSDP on UDP 1800) or **Enter speaker IP manually**.
+3. Pick the discovered speaker, or enter its IP and model. That's it — no cert paste, no file paths.
+
+---
+
+## Changelog
+
+### 1.1.1
+- **NEW** LSSDP network discovery on UDP port 1800 — restored "Scan network" path.
+- **NEW** Client certificate now bundled with the integration (`certs/client.pem`, `certs/client.key`); LS10 speakers use it automatically.
+- **CHANGED** Config flow now offers Scan vs Manual as the first step (matches the original v1.0 design).
+- **REMOVED** cert_path / key_path fields from the config flow — users never need to touch certificates.
 
 ---
 
@@ -177,8 +193,6 @@ For everyday group playback, also enable the built-in **Cast** integration along
 See `lithe_ha_integration_spec.md` for the full protocol reference.
 
 ---
-
-## Changelog
 
 ### 1.1.0
 - **NEW** Button platform — chime buttons (one per slot, per-product gated), Reboot, Factory Reset.
