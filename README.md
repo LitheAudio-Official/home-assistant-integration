@@ -8,16 +8,16 @@ Direct, local control of Lithe Audio WiFi speakers over the LUCI protocol on por
 
 ## Supported speakers
 
-| Product | Platform | TLS | Chimes | EQ/DSP | Bluetooth |
-|---|---|---|---|---|---|
-| WiFi PRO 2 | LS10 | ✅ | 15 | Full | ✅ |
-| WiFi Speaker V3 | LS10 | ✅ | 15 | EQ, Output | ✅ |
-| iO1 | LS10 | ✅ | 10 | EQ, Output | — |
-| WiFi Speaker V2 | LS9 | — | 10 | — | ✅ |
-| WiFi PRO | LS9 | — | 6 | — | — |
-| Micro Subwoofer | LS9 | — | 0 | — | — |
+| Product | Platform | TLS | Chimes | EQ/DSP | Loudness | Bluetooth |
+|---|---|---|---|---|---|---|
+| WiFi PRO 2 | LS10 | ✅ | 15 | Full (EQ, Output, HPF, Tuning, Balance) | Slider −10..+10 dB | ✅ |
+| WiFi Speaker V3 | LS10 | ✅ | 6 | EQ, Output, Balance | On/Off | ✅ |
+| iO1 | LS10 | ✅ | 10 | EQ, Output, Balance | On/Off | ✅ |
+| WiFi Speaker V2 | LS9 | — | 0 | EQ, Output, Balance | On/Off | ✅ |
+| WiFi PRO | LS9 | — | 6 | EQ, Output, Balance | On/Off | ✅ |
+| Micro Subwoofer | LS9 | — | 0 | — | — | ✅ |
 
-LS10 speakers require a client cert (`client.pem`, `client.key`). LS9 speakers connect plain-TCP.
+LS10 speakers use the bundled developer cert automatically. LS9 speakers connect plain-TCP.
 
 ---
 
@@ -45,6 +45,13 @@ Copy `custom_components/lithe_audio/` into your HA `config/custom_components/` a
 ---
 
 ## Changelog
+
+### 1.1.2
+- **FIX** Chime counts corrected: V3 = 6 (was 15), V2 = 0 (was 10).
+- **FIX** Bluetooth opened up to all products including iO1 and Micro Sub (was PRO2/V3 only).
+- **FIX** EQ Preset, Speaker Output, Balance, Loudness switch and Night Mode now available on PRO and V2 too (was LS10-only).
+- **REFACTOR** Single `PRODUCT_CAPS` dict in `const.py` now drives every entity gate — no more scattered `if product in (…)` checks across platform files.
+- **NOTE** Micro Sub DSP (low-pass filter, mode, phase, crossover, gain) intentionally not yet implemented — pending sub-MB ID capture.
 
 ### 1.1.1
 - **NEW** LSSDP network discovery on UDP port 1800 — restored "Scan network" path.
