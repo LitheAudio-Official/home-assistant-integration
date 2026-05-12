@@ -153,6 +153,33 @@ PRODUCT_CHIMES = {
     PRODUCT_MICRO: 0,
 }
 
+# ── LSSDP discovery ─────────────────────────────────────────────────────────
+LSSDP_MULTICAST_ADDR = "239.255.255.250"
+LSSDP_PORT           = 1800
+LSSDP_MSEARCH = (
+    b"M-SEARCH * HTTP/1.1\r\n"
+    b"HOST: 239.255.255.250:1800\r\n"
+    b"MAN: \"ssdp:discover\"\r\n"
+    b"MX: 3\r\n"
+    b"ST: urn:LinkPlay:device:LinkPlay:1\r\n\r\n"
+)
+
+# Platform labels (used by discovery)
+PLATFORM_LS9   = "LS9"
+PLATFORM_LS10  = "LS10"
+
+# LS10 model name fragments (used to classify LSSDP responses)
+LS10_MODELS = ("PRO2", "WiFiV3", "WIFIV3", "IO1", "io1", "iO1")
+
+# ── Bundled client certificate ──────────────────────────────────────────────
+# LS10 speakers use TLS 1.2 mutual auth with a single per-developer cert
+# issued by Lithe Audio. The cert is bundled with the integration so users
+# never have to obtain or paste it.
+import os as _os
+_CERTS_DIR = _os.path.join(_os.path.dirname(__file__), "certs")
+BUNDLED_CERT_PEM = _os.path.join(_CERTS_DIR, "client.pem")
+BUNDLED_CERT_KEY = _os.path.join(_CERTS_DIR, "client.key")
+
 # ── Update intervals ────────────────────────────────────────────────────────
 SCAN_INTERVAL_S = 30
 

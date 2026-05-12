@@ -1,25 +1,24 @@
 """Lightweight SSDP (LSSDP) discovery for Lithe Audio speakers.
 
 Lithe uses a proprietary SSDP variant on the standard 239.255.255.250
-multicast group but port 1800 (not 1900) with simpler headers. We send an
-M-SEARCH and harvest responses for ~3 seconds to enumerate speakers on the
-local network without parsing SSDP XML.
+multicast group but port 1800 (not 1900). We send an M-SEARCH and
+harvest responses for ~3 seconds to enumerate speakers on the local
+network without parsing SSDP XML.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import socket
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
 
 from .const import (
     LS10_MODELS,
     LSSDP_MSEARCH,
     LSSDP_MULTICAST_ADDR,
     LSSDP_PORT,
-    PLATFORM_LS10,
     PLATFORM_LS9,
+    PLATFORM_LS10,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -39,59 +38,49 @@ class DiscoveredDevice:
     cast_firmware: str = ""
     net_mode: str = ""
     speaker_type: str = ""
-    raw_headers: dict[str, str] | None = None
+    raw_headers: dict[str, str] = field(default_factory=dict)
 
     @property
     def unique_id(self) -> str:
-        """Stable per-device identifier (MAC preferred)."""
-        return (self.mac or f"{self.host}:{self.port}").lower().replace(":", "")
+        """Stable per-device identifier — MAC if available, otherwise IP."""
+        return (self.mac or self.host).lower().replace(":", "")
 
 
 class _LSSDPProtocol(asyncio.DatagramProtocol):
-    def __init__(self, responses: list[tuple[bytes, tuple[str, int]]]) -> None:
-        self._responses = responses
+    def __init__(self, sink: list) -> None:
+        self._sink = sink
 
-    def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
-        self._responses.append((data, addr))
-
-    def error_received(self, exc: Exception) -> None:  # noqa: D401
-        _LOGGER.debug("LSSDP socket error: %s", exc)
+    def datagram_received(self, data: bytes, addr) -> None:  # type: ignore[override]
+        self._sink.append((data, addr))
 
 
 def _parse_response(data: bytes, src_host: str) -> DiscoveredDevice | None:
-    """Parse one LSSDP response/NOTIFY datagram."""
+    """Parse one LSSDP HTTP/1.1 response into a DiscoveredDevice."""
     try:
-        text = data.decode("utf-8", errors="replace")
-    except UnicodeDecodeError:
+        text = data.decode("utf-8", "replace")
+    except Exception:
         return None
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    if not lines or not (
-        lines[0].startswith("HTTP/1.1") or lines[0].startswith("NOTIFY")
-    ):
-        return None
+
     headers: dict[str, str] = {}
-    for line in lines[1:]:
-        if ":" not in line:
-            continue
-        key, _, value = line.partition(":")
-        headers[key.strip().upper()] = value.strip()
+    for line in text.splitlines()[1:]:
+        if ":" in line:
+            k, _, v = line.partition(":")
+            headers[k.strip().upper()] = v.strip()
 
-    # Required hint: this is a LSSDP packet
-    if "LSSDP" not in headers.get("VERSION", "") and "LSSDP" not in text:
+    if not headers:
         return None
 
-    mac = headers.get("USN", "").lower()
-    if not mac:
-        return None
-    try:
-        port = int(headers.get("PORT", "7777"))
-    except ValueError:
-        port = 7777
+    # Some Lithe responses carry MAC under different keys
+    mac = (
+        headers.get("MAC")
+        or headers.get("USN")
+        or headers.get("DEVICE_ID")
+        or ""
+    )
+    model = headers.get("MODEL") or headers.get("ST") or ""
+    speaker_type = headers.get("SPEAKER_TYPE", "")
 
-    model = headers.get("CAST_MODEL", "")
-    speaker_type = headers.get("SPEAKERTYPE", "")
-    # Crude platform inference: SOURCE_LIST starting with "LS10::" or
-    # CAST_MODEL strings that match the LS10 product family.
+    # Determine platform
     source_list = headers.get("SOURCE_LIST", "")
     if source_list.startswith("LS10") or any(m in model for m in LS10_MODELS):
         platform = PLATFORM_LS10
@@ -105,10 +94,15 @@ def _parse_response(data: bytes, src_host: str) -> DiscoveredDevice | None:
     else:
         mac_pretty = mac.upper()
 
+    try:
+        port = int(headers.get("PORT", "7777") or 7777)
+    except ValueError:
+        port = 7777
+
     return DiscoveredDevice(
         host=src_host,
         port=port,
-        name=headers.get("DEVICENAME", model or src_host),
+        name=headers.get("DEVICENAME") or model or src_host,
         model=model,
         mac=mac_pretty,
         platform=platform,
@@ -121,18 +115,16 @@ def _parse_response(data: bytes, src_host: str) -> DiscoveredDevice | None:
 
 
 async def async_discover(timeout: float = 3.0) -> list[DiscoveredDevice]:
-    """Send LSSDP M-SEARCH and collect responses.
+    """Send LSSDP M-SEARCH and collect responses for ``timeout`` seconds.
 
-    Returns one ``DiscoveredDevice`` per unique MAC address. Safe to call
-    from the Home Assistant event loop.
+    Returns one ``DiscoveredDevice`` per unique MAC. Safe to call from
+    the Home Assistant event loop.
     """
     loop = asyncio.get_running_loop()
-    responses: list[tuple[bytes, tuple[str, int]]] = []
+    responses: list[tuple[bytes, tuple]] = []
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    # We bind to an ephemeral port and join the LSSDP group so NOTIFYs
-    # arrive too. Multicast TTL of 4 is generous for typical home LANs.
     sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 4)
     sock.setblocking(False)
     sock.bind(("", 0))
@@ -144,6 +136,8 @@ async def async_discover(timeout: float = 3.0) -> list[DiscoveredDevice]:
         )
         sock.sendto(LSSDP_MSEARCH, (LSSDP_MULTICAST_ADDR, LSSDP_PORT))
         await asyncio.sleep(timeout)
+    except Exception as e:
+        _LOGGER.debug("LSSDP discovery error: %s", e)
     finally:
         if transport is not None:
             transport.close()
@@ -153,8 +147,8 @@ async def async_discover(timeout: float = 3.0) -> list[DiscoveredDevice]:
         dev = _parse_response(data, addr[0])
         if dev is None:
             continue
-        # Prefer LS10 detection over LS9 if we get duplicate frames
         key = dev.unique_id
+        # Prefer LS10 detection over LS9 if duplicate frames arrive
         if key not in seen or dev.platform == PLATFORM_LS10:
             seen[key] = dev
     return list(seen.values())
