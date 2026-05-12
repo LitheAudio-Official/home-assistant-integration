@@ -270,9 +270,22 @@ class LitheAudioClient:
         await self._send(CMD_SET, MB_MUTE, MUTE_ON if mute else MUTE_OFF)
 
     async def async_play_chime(self, index: int) -> None:
-        """Trigger an embedded cue (song1..song15) via MB#80."""
+        """Trigger an embedded cue (song1..song15).
+
+        For indices 1-9 we use MB#80 ``play N`` which is the canonical
+        cue-trigger command. For 10-15 the speaker's MB#80 parser appears
+        to only accept single-digit indices on some firmware revisions —
+        we route those through MB#41 ``PLAYITEM:DIRECT:/system/usr/songN.mp3``
+        which reaches the same files but uses the full-path interpreter.
+        """
         index = max(1, min(15, int(index)))
-        await self._send(CMD_SET, MB_CHIME, f"play {index}")
+        if index <= 9:
+            await self._send(CMD_SET, MB_CHIME, f"play {index}")
+        else:
+            await self._send(
+                CMD_SET, MB_BROWSE,
+                f"PLAYITEM:DIRECT:/system/usr/song{index}.mp3",
+            )
 
     async def async_play_direct(self, path: str) -> None:
         """Play an arbitrary URL or local /system/usr/songN.mp3 via MB#41."""
