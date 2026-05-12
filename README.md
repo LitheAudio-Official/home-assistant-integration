@@ -46,6 +46,19 @@ Copy `custom_components/lithe_audio/` into your HA `config/custom_components/` a
 
 ## Changelog
 
+### 1.1.9
+- **NEW** MB#42 now-playing parser handles 6+ wrapper key conventions (Window CONTENTS, WindowContents, data, etc.) and 15+ artwork key candidates across LinkPlay firmware variants.
+- **NEW** Artwork URLs that come back as relative paths (e.g. `/album/cover.jpg`) are now resolved against the speaker's host IP.
+- **NEW** Duration parser now handles both ms and seconds — auto-detects and converts.
+- **NEW** MB#208 device info parser supports JSON dict, single-line key:value, and multi-line key:value. Key matching is now case-insensitive and ignores separators (so `mac`, `MAC`, `mac_address`, `MAC Address`, `MacAddress`, `MAC-ADDR` all match).
+- **NEW** MB#91 (Network Info) now handled — same parser as MB#208, often contains the MAC and band when MB#208 doesn't.
+- **NEW** Periodic refresh now also requests MB#91 and tries both `GET` and `FAV_LIST` for favourites.
+
+### 1.1.8
+- **NEW** Position now ticks live in the media-player UI — added `media_position_updated_at` so HA can extrapolate between MB#49 pushes.
+- **NEW** Periodic refresh now also requests MB#49 position so the timer stays accurate even between user actions.
+- **NEW** Debug logging now records every received push packet (MBID + payload preview). Essential for diagnosing remaining issues with chimes, EQ, MAC, timezone, Wi-Fi band, browse, and album art — enable `custom_components.lithe_audio: debug` and the log will show exactly what the speaker is sending back.
+
 ### 1.1.7 — CRITICAL FIX
 - **FIX** LUCI packet header was 9 bytes (CRC=1 byte) but the spec requires 10 bytes (CRC=2 bytes). Every TX packet was one byte short; speakers silently dropped commands and never replied with state. This explains why connections succeeded but nothing else worked — no transport, no volume, no chimes, no source updates, no metadata.
 - **FIX** RX parser corrected to match — header is now correctly read as 10 bytes with DataLen at offset 8 (was offset 7).
