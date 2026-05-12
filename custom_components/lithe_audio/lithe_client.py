@@ -418,6 +418,34 @@ class LitheClient:
         elif mbid == MB_FAVOURITES:
             self._parse_favourites(payload)
 
+        elif mbid == MB_DSP:
+            # Payload is binary DSP sub-packet(s). Decode for visibility.
+            # Push format (5 bytes): 00 03 <subMB_hi> <subMB_lo> <value>
+            # SET response (6 bytes): 00 04 <subMB_hi> <subMB_lo> 02 <value>
+            # Multiple sub-packets may be concatenated.
+            try:
+                raw = payload.encode("latin-1") if isinstance(payload, str) else payload
+                if _LOGGER.isEnabledFor(logging.DEBUG):
+                    parsed = []
+                    i = 0
+                    while i + 5 <= len(raw):
+                        if raw[i] == 0x00 and raw[i+1] == 0x03 and i + 5 <= len(raw):
+                            sub_mb = (raw[i+2] << 8) | raw[i+3]
+                            val = raw[i+4]
+                            parsed.append(f"sub=0x{sub_mb:02x}({sub_mb}) val={val}")
+                            i += 5
+                        elif raw[i] == 0x00 and raw[i+1] == 0x04 and i + 6 <= len(raw):
+                            sub_mb = (raw[i+2] << 8) | raw[i+3]
+                            val = raw[i+5]
+                            parsed.append(f"SET sub=0x{sub_mb:02x}({sub_mb}) val={val}")
+                            i += 6
+                        else:
+                            i += 1
+                    if parsed:
+                        _LOGGER.debug("DSP MB#112 decoded: %s", "; ".join(parsed))
+            except Exception:
+                pass
+
         elif mbid == MB_BT_STATUS:
             self.state.bt_status = payload.strip()
 

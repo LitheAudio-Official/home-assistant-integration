@@ -76,7 +76,10 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
             manufacturer="Lithe Audio",
             model=state.model or PRODUCT_NAMES.get(self._product),
             sw_version=state.firmware or None,
-            configuration_url=f"http://{self._client.host}:8008/setup/eureka_info",
+            # Bare http:// to the speaker IP — most reliable URL across
+            # firmware versions (the Cast eureka_info endpoint isn't always
+            # exposed). Some users may need to use the Lithe app instead.
+            configuration_url=f"http://{self._client.host}",
         )
 
     # ── Feature flags ──────────────────────────────────────────────────────
