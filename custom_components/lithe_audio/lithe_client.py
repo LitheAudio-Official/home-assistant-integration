@@ -230,15 +230,20 @@ class LitheClient:
         await self._send(0x02, MB_DEVICE_NAME, name)
 
     async def async_play_chime(self, chime_number: int) -> None:
-        """Play a chime by slot number.
+        """Trigger an embedded cue (song1..song15).
 
-        Spec format is `play <N>` on MB#80. Some firmwares accept just the
-        slot number, or `PLAY:<N>`. We send the documented form; if the
-        speaker is silently rejecting it, debug logging will show no MB#80
-        ACK and we can try alternatives.
+        Restores the proven-working morning behaviour:
+          - Slots 1-9 → MB#80 ``play N`` (canonical cue trigger)
+          - Slots 10-15 → MB#41 ``PLAYITEM:DIRECT:/system/usr/songN.mp3``
+            because some firmware revisions hardcode the MB#80 parser to
+            single-digit indices only. The MB#41 DIRECT path reaches the
+            same files via the browse engine and handles arbitrary paths.
         """
-        n = int(chime_number)
-        await self._send(0x02, MB_CHIME, f"play {n}")
+        n = max(1, min(15, int(chime_number)))
+        if n <= 9:
+            await self._send(0x02, MB_CHIME, f"play {n}")
+        else:
+            await self._send(0x02, MB_BROWSE, f"PLAYITEM:DIRECT:/system/usr/song{n}.mp3")
 
     async def async_bluetooth(self, command: str) -> None:
         """BT command: ON / OFF / ENTPAIR / DISCONNECT."""
@@ -269,6 +274,7 @@ class LitheClient:
         header = struct.pack("<HBHBHH", 0xAAAA, 0x02, MB_DSP, 0, 0x0000, data_len)
         pkt = header + sub + b"\x00"
         if self._writer and not self._writer.is_closing():
+            _LOGGER.debug("TX DSP MB#112: sub=0x%02x(%d) val=%d", sub_mb, sub_mb, value)
             self._writer.write(pkt)
             await self._writer.drain()
 
@@ -417,6 +423,21 @@ class LitheClient:
 
         elif mbid == MB_FAVOURITES:
             self._parse_favourites(payload)
+
+        elif mbid == MB_CHIME:
+            # Speaker's response to our chime play command.
+            # SUCCESS = audio played, NI = "Not Installed" (slot empty),
+            # FILE_NOT_FOUND = legacy variant of NI on some firmwares.
+            r = payload.strip().upper()
+            if r in ("NI", "FILE_NOT_FOUND"):
+                _LOGGER.warning(
+                    "Chime command returned '%s' — that slot has no audio "
+                    "installed on the speaker. Upload a cue to the slot via "
+                    "the Lithe portal/app before triggering it from HA.",
+                    payload.strip(),
+                )
+            elif r and r != "SUCCESS":
+                _LOGGER.debug("Chime response: %s", payload.strip())
 
         elif mbid == MB_DSP:
             # Payload is binary DSP sub-packet(s). Decode for visibility.
@@ -683,6 +704,10 @@ class LitheClient:
 
     async def _send(self, cmd_type: int, mbid: int, payload: str) -> None:
         if self._writer and not self._writer.is_closing():
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                op = "GET" if cmd_type == 0x01 else "SET"
+                preview = payload[:80] + ("…" if len(payload) > 80 else "")
+                _LOGGER.debug("TX %s MB#%d (%d bytes): %s", op, mbid, len(payload), preview)
             self._writer.write(self._build_packet(cmd_type, mbid, payload))
             await self._writer.drain()
 
