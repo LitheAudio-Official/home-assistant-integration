@@ -46,6 +46,11 @@ Copy `custom_components/lithe_audio/` into your HA `config/custom_components/` a
 
 ## Changelog
 
+### 1.1.3
+- **FIX** Config entries created by older versions without the `product` key no longer crash on setup — the integration now infers the product from the entry title and migrates the data in place.
+- **FIX** TLS products without a stored cert path now fall back to the bundled cert automatically.
+- **NEW** Downloadable diagnostics (`diagnostics.py`). Click the speaker device → Download Diagnostics for a redacted state dump. Also silences the spurious `blocking call to import_module ... diagnostics` warning from HA.
+
 ### 1.1.2
 - **FIX** Chime counts corrected: V3 = 6 (was 15), V2 = 0 (was 10).
 - **FIX** Bluetooth opened up to all products including iO1 and Micro Sub (was PRO2/V3 only).
