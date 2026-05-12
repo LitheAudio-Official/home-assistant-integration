@@ -318,17 +318,20 @@ class LitheClient:
             offset 3-4:  MBID      (2 bytes, BE on RX)
             offset 5:    Status    (1 byte)
             offset 6-7:  CRC       (2 bytes)
-            offset 8-9:  DataLen   (2 bytes, BE on RX) — payload length only
+            offset 8-9:  DataLen   (2 bytes, BE on RX)
 
-        Wire format: [10-byte header][DataLen-byte payload][1-byte NUL]
-        Total bytes consumed per packet: 10 + DataLen + 1.
+        IMPORTANT — the spec says TX and RX framing are asymmetric:
+          - On TX we send LE, DataLen = payload length only, NUL appended.
+          - On RX the speaker sends BE, and DataLen on incoming packets
+            INCLUDES the trailing NUL byte. So the next packet starts at
+            offset (10 + DataLen) with NO additional skip.
         """
         while len(self._buf) >= 10:
             try:
                 data_len = struct.unpack_from(">H", self._buf, 8)[0]
             except struct.error:
                 break
-            total = 10 + data_len + 1  # +1 for the NUL terminator after payload
+            total = 10 + data_len
             if len(self._buf) < total:
                 break
 
@@ -681,7 +684,7 @@ class LitheClientLS9(LitheClient):
                             data_len = struct.unpack_from(">H", buf, 8)[0]
                         except struct.error:
                             break
-                        total = 10 + data_len + 1
+                        total = 10 + data_len
                         if len(buf) < total:
                             break
                         r_mbid = struct.unpack_from(">H", buf, 3)[0]
