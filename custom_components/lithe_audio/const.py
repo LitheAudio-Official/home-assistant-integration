@@ -1,128 +1,55 @@
 """Constants for the Lithe Audio integration."""
-from __future__ import annotations
 
-from typing import Final
+DOMAIN = "lithe_audio"
 
-DOMAIN: Final = "lithe_audio"
-MANUFACTURER: Final = "Lithe Audio"
+# Config entry keys
+CONF_HOST       = "host"
+CONF_PORT       = "port"
+CONF_PRODUCT    = "product"
+CONF_USE_TLS    = "use_tls"
+CONF_CERT_PATH  = "cert_path"
+CONF_KEY_PATH   = "key_path"
 
-# ── Config flow keys ───────────────────────────────────────────────────────
-CONF_HOST: Final = "host"
-CONF_PORT: Final = "port"
-CONF_NAME: Final = "name"
-CONF_PLATFORM: Final = "platform"           # "LS9" or "LS10"
-CONF_MODEL: Final = "model"
-CONF_CERT_PEM: Final = "cert_pem"           # contents of client.pem (LS10)
-CONF_CERT_KEY: Final = "cert_key"           # contents of client.key (LS10)
-CONF_MAC: Final = "mac"
+# Default values
+DEFAULT_PORT = 7777
+DEFAULT_TLS  = True
 
-DEFAULT_PORT: Final = 7777
-DEFAULT_NAME: Final = "Lithe Audio Speaker"
+# ── Products ────────────────────────────────────────────────────────────────
+PRODUCT_PRO2   = "pro2"
+PRODUCT_V3     = "wifiv3"
+PRODUCT_IO1    = "io1"
+PRODUCT_V2     = "wifiv2"
+PRODUCT_PRO    = "wifipro"
+PRODUCT_MICRO  = "micro"
 
-# ── Platforms ──────────────────────────────────────────────────────────────
-PLATFORM_LS9: Final = "LS9"
-PLATFORM_LS10: Final = "LS10"
-
-# ── Product models ─────────────────────────────────────────────────────────
-# Used to scope feature exposure (chime count, EQ, etc.)
-MODEL_PRO2: Final = "PRO2"
-MODEL_V3: Final = "WiFiV3"
-MODEL_IO1: Final = "iO1"
-MODEL_V2: Final = "WiFiV2"
-MODEL_PRO: Final = "PRO"
-MODEL_MICRO: Final = "MicroSub"
-MODEL_GENERIC: Final = "Generic"
-
-LS10_MODELS: Final = {MODEL_PRO2, MODEL_V3, MODEL_IO1}
-LS9_MODELS: Final = {MODEL_V2, MODEL_PRO, MODEL_MICRO}
-
-# Chime counts per model (embedded /system/usr/song[N].mp3)
-PRODUCT_CHIMES: Final[dict[str, int]] = {
-    MODEL_PRO2: 15,
-    MODEL_V3: 15,
-    MODEL_IO1: 10,
-    MODEL_V2: 10,
-    MODEL_PRO: 6,
-    MODEL_MICRO: 0,
-    MODEL_GENERIC: 15,
+PRODUCT_NAMES = {
+    PRODUCT_PRO2:  "WiFi PRO 2",
+    PRODUCT_V3:    "WiFi Speaker V3",
+    PRODUCT_IO1:   "iO1",
+    PRODUCT_V2:    "WiFi Speaker V2",
+    PRODUCT_PRO:   "WiFi PRO",
+    PRODUCT_MICRO: "Micro Subwoofer",
 }
 
-# ── LUCI Message Box IDs ───────────────────────────────────────────────────
-MB_REGISTER: Final = 3
-MB_FIRMWARE: Final = 5
-MB_REBOOT: Final = 37
-MB_TRANSPORT: Final = 40           # PLAY/PAUSE/STOP/NEXT/PREV/SEEK/RESUME
-MB_BROWSE: Final = 41              # SELECTITEM/PLAYITEM/SCROLL
-MB_NOW_PLAYING: Final = 42         # UI JSON (push)
-MB_POSITION: Final = 49            # ms position
-MB_SOURCE: Final = 50              # numeric source ID
-MB_PLAY_STATE: Final = 51          # 0/1/2/3/5
-MB_MUTE: Final = 63                # MUTE/UNMUTE
-MB_VOLUME: Final = 64              # 0..100
-MB_PRESET: Final = 70              # FAV_SAVE/FAV_PLAY/FAV_DELETE/FAV_LIST
-MB_CHIME: Final = 80               # "play N"
-MB_DEVICE_NAME: Final = 90
-MB_NETWORK_INFO: Final = 91
-MB_DEVICE_DETAILS: Final = 92      # JSON: mac/serial/version
-MB_INPUT_START: Final = 95         # AUX/Line-in
-MB_INPUT_STOP: Final = 96
-MB_TUNNEL_START: Final = 111
-MB_TUNNEL_STOP: Final = 121
-MB_DEVICE_INFO: Final = 208        # Model:xxx etc
-MB_BLUETOOTH: Final = 209          # ON/OFF/ENTPAIR/DISCONNECT
-MB_BT_STATUS: Final = 210
-MB_SERVICE_CREDS: Final = 213
-MB_TIMEZONE: Final = 573
-MB_CAST_STATUS: Final = 572
+# LS10 = TLS 1.2, LS9 = plain TCP
+LS10_PRODUCTS = {PRODUCT_PRO2, PRODUCT_V3, PRODUCT_IO1}
+LS9_PRODUCTS  = {PRODUCT_V2, PRODUCT_PRO, PRODUCT_MICRO}
 
-# ── Protocol command types ────────────────────────────────────────────────
-CMD_GET: Final = 0x01
-CMD_SET: Final = 0x02
-
-REMOTE_ID: Final = 0xAAAA
-PACKET_TERMINATOR: Final = b"\x00"
-
-# ── Transport commands (MB#40 payload) ────────────────────────────────────
-TRANSPORT_PLAY: Final = "PLAY"
-TRANSPORT_PAUSE: Final = "PAUSE"
-TRANSPORT_STOP: Final = "STOP"
-TRANSPORT_NEXT: Final = "NEXT"
-TRANSPORT_PREV: Final = "PREV"
-TRANSPORT_RESUME: Final = "RESUME"
-TRANSPORT_MUTE: Final = "MUTE"
-TRANSPORT_UNMUTE: Final = "UNMUTE"
-
-# ── Mute commands (MB#63) ─────────────────────────────────────────────────
-MUTE_ON: Final = "MUTE"
-MUTE_OFF: Final = "UNMUTE"
-MUTE_TOGGLE: Final = "MUTETOGGLE"
-
-# ── Play states (MB#51 payload values) ────────────────────────────────────
-# Note: the API doc gives both "0=Playing 1=Paused 5=Buffering" (partner doc)
-# and "0=Playing 1=Stopped 2=Paused 3=Connecting" (LUCI tech note); we map
-# both representations here for safety.
-PLAY_STATES: Final[dict[str, str]] = {
-    "0": "playing",
-    "1": "paused",     # partner doc; bridge.py maps 1=stopped — see _coerce_state
-    "2": "paused",
-    "3": "buffering",
-    "5": "buffering",
-}
-
-# ── Source ID map (MB#50 numeric IDs, LS10 platform) ──────────────────────
-SOURCE_NAMES: Final[dict[int, str]] = {
-    0: "No Source",
-    1: "AirPlay",
-    2: "DMR",
-    3: "DMP",
-    4: "Spotify",
-    5: "USB",
-    7: "Melon",
-    8: "vTuner",
-    9: "TuneIn",
+# ── Sources (MB#50 payload) ─────────────────────────────────────────────────
+# Corrected to match LUCI API spec (v15.0.7)
+SOURCES = {
+    0:  "No Source",
+    1:  "AirPlay",
+    2:  "DMR",
+    3:  "DMP",
+    4:  "Spotify",
+    5:  "USB",
+    7:  "Melon",
+    8:  "vTuner",
+    9:  "TuneIn",
     11: "Playlist",
     13: "AUX In",
-    14: "SPDIF",
+    14: "SPDIF In",
     17: "Direct URL",
     18: "QPlay",
     19: "Bluetooth",
@@ -130,63 +57,114 @@ SOURCE_NAMES: Final[dict[int, str]] = {
     22: "Tidal",
     23: "Favourites",
     24: "Google Cast",
-    25: "External",
-    26: "RTSP",
     27: "Roon",
     28: "Alexa",
     30: "Airable",
-    31: "Democloud",
 }
 
-# Sources that are essentially read-only inputs (no transport control useful)
-INPUT_ONLY_SOURCES: Final = {13, 14, 19, 25}     # AUX/SPDIF/Bluetooth/External
-# Sources where SEEK is reliable
-SEEKABLE_SOURCES: Final = {4, 17, 21, 22, 30}    # Spotify/DirectUrl/Deezer/Tidal/Airable
+# Sources actually supported per product (used for source_list)
+PRODUCT_SOURCES = {
+    PRODUCT_PRO2:  [0, 1, 4, 9, 13, 14, 19, 21, 22, 23, 24, 27, 28, 30],
+    PRODUCT_V3:    [0, 1, 4, 9, 19, 21, 22, 23, 24, 27, 28, 30],
+    PRODUCT_IO1:   [0, 1, 4, 9, 21, 22, 23, 24, 27, 28, 30],
+    PRODUCT_V2:    [0, 1, 4, 19, 24, 30],
+    PRODUCT_PRO:   [0, 1, 4, 24, 30],
+    PRODUCT_MICRO: [0, 1, 24],
+}
 
-# ── Bluetooth commands (MB#209) ───────────────────────────────────────────
-BT_ON: Final = "ON"
-BT_OFF: Final = "OFF"
-BT_PAIR: Final = "ENTPAIR"
-BT_DISCONNECT: Final = "DISCONNECT"
-BT_GET_ADDR: Final = "GETLOCALBTADDR"
+# ── Message Box IDs ─────────────────────────────────────────────────────────
+MB_REGISTER       = 3
+MB_FIRMWARE       = 5
+MB_HOST_PRESENT   = 9
+MB_PLAYBACK_AUTH  = 10    # HOST MCU only — NEVER respond with MB#11
+MB_TRANSPORT      = 40
+MB_BROWSE         = 41
+MB_NOW_PLAYING    = 42
+MB_ARTWORK        = 43
+MB_POSITION       = 49
+MB_SOURCE         = 50
+MB_PLAY_STATE     = 51
+MB_MUTE           = 63
+MB_VOLUME         = 64
+MB_FAVOURITES     = 70
+MB_CHIME          = 80
+MB_DEVICE_NAME    = 90
+MB_NETWORK_INFO   = 91
+MB_DSP            = 112
+MB_REBOOT_REQ     = 114   # Reboot Request (was incorrectly 37)
+MB_REBOOT_CMD     = 115
+MB_FACTORY_RESET  = 150
+MB_DEVICE_INFO    = 208
+MB_BLUETOOTH      = 209
+MB_BT_STATUS      = 210
+MB_CAST_STATUS    = 572
+MB_TIMEZONE       = 573
 
-# ── Update intervals & timing ─────────────────────────────────────────────
-RECONNECT_BASE_DELAY: Final = 2.0      # seconds, exponential backoff base
-RECONNECT_MAX_DELAY: Final = 60.0
-KEEPALIVE_INTERVAL: Final = 25.0       # seconds — speaker pushes MB#51 ~30s
-VOLUME_DEBOUNCE_MS: Final = 250
-CONNECT_TIMEOUT: Final = 10.0
-DEFAULT_SCAN_INTERVAL: Final = 30      # for state polling fallback
+# ── Transport commands (MB#40 payload) ──────────────────────────────────────
+TRANSPORT_PLAY    = "PLAY"
+TRANSPORT_PAUSE   = "PAUSE"
+TRANSPORT_STOP    = "STOP"
+TRANSPORT_RESUME  = "RESUME"
+TRANSPORT_NEXT    = "NEXT"
+TRANSPORT_PREV    = "PREV"
 
-# ── Discovery ─────────────────────────────────────────────────────────────
-LSSDP_MULTICAST_ADDR: Final = "239.255.255.250"
-LSSDP_PORT: Final = 1800        # Lithe LSSDP uses 1800, not 1900
-LSSDP_MSEARCH: Final = (
-    b"M-SEARCH * HTTP/1.1\r\n"
-    b"HOST: 239.255.255.250:1800\r\n"
-    b"\r\n"
-    b"PROTOCOL: Version 1.0\r\n"
-)
+# ── Play states (MB#51 payload) ─────────────────────────────────────────────
+PLAY_STATES = {
+    "0": "playing",
+    "1": "stopped",
+    "2": "paused",
+    "3": "connecting",
+    "4": "buffering",   # receiving
+    "5": "buffering",
+}
 
-# Zeroconf service type (some devices also announce on standard mDNS)
-ZEROCONF_TYPE: Final = "_googlecast._tcp.local."
+# ── Mute commands (MB#63 payload) ───────────────────────────────────────────
+MUTE_ON     = "MUTE"
+MUTE_OFF    = "UNMUTE"
+MUTE_TOGGLE = "MUTETOGGLE"
 
-# ── HA-side identifiers ───────────────────────────────────────────────────
-SIGNAL_STATE_UPDATED: Final = f"{DOMAIN}_state_updated"
-SIGNAL_GROUPS_UPDATED: Final = f"{DOMAIN}_groups_updated"
+# ── Bluetooth commands (MB#209 payload) ─────────────────────────────────────
+BT_ON      = "ON"
+BT_OFF     = "OFF"
+BT_PAIR    = "ENTPAIR"
+BT_DISC    = "DISCONNECT"
 
-# ── Service names ─────────────────────────────────────────────────────────
-SERVICE_PLAY_CHIME: Final = "play_chime"
-SERVICE_PLAY_PRESET: Final = "play_preset"
-SERVICE_SAVE_PRESET: Final = "save_preset"
-SERVICE_DELETE_PRESET: Final = "delete_preset"
-SERVICE_PLAY_DIRECT: Final = "play_direct"
-SERVICE_SEND_RAW: Final = "send_raw_command"
-SERVICE_REBOOT: Final = "reboot"
+# ── DSP sub-MB IDs (LS10 MB#112 tunnel) ─────────────────────────────────────
+# Confirmed from live capture: PRO2 firmware CR443GP_3713
+DSP_EQ        = 0x0A   # 0=Normal 1=Acoustic 2=Jazz 3=Pop 4=HipHop
+DSP_LOUDNESS  = 0x16   # PRO2: signed byte -10..+10  |  V3/iO1: 0=OFF 1=ON
+DSP_NIGHTMODE = 0x18   # 0=OFF 1=ON
+DSP_HIGHPASS  = 0x1A   # 0=OFF 1=60Hz 2=80Hz 3=100Hz 4=120Hz  (PRO2 only)
+DSP_OUTPUT    = 0x1C   # 0=Stereo 1=Mono 2=Left 3=Right
+DSP_TUNING    = 0x1D   # 0=13L Enclosure 1=Open Back  (PRO2 only)
+DSP_BALANCE   = 0x1E   # signed byte -6..+6  (UNCONFIRMED — needs sniffer)
 
-ATTR_CHIME_INDEX: Final = "chime_index"
-ATTR_PRESET_SLOT: Final = "preset_slot"
-ATTR_DIRECT_PATH: Final = "path"
-ATTR_RAW_MBID: Final = "mbid"
-ATTR_RAW_PAYLOAD: Final = "payload"
-ATTR_RAW_CMD_TYPE: Final = "cmd_type"
+EQ_PRESETS  = ["Normal", "Acoustic", "Jazz", "Pop", "Hip-Hop"]
+HP_OPTIONS  = ["OFF", "60Hz", "80Hz", "100Hz", "120Hz"]
+OUT_OPTIONS = ["Stereo", "Mono", "Left", "Right"]
+
+# ── Per-product chime counts ────────────────────────────────────────────────
+PRODUCT_CHIMES = {
+    PRODUCT_PRO2:  15,
+    PRODUCT_V3:    15,
+    PRODUCT_IO1:   10,
+    PRODUCT_V2:    10,
+    PRODUCT_PRO:   6,
+    PRODUCT_MICRO: 0,
+}
+
+# ── Update intervals ────────────────────────────────────────────────────────
+SCAN_INTERVAL_S = 30
+
+# ── Coordinator data keys ───────────────────────────────────────────────────
+DATA_COORDINATOR = "coordinator"
+DATA_DEVICE_INFO = "device_info"
+DATA_TANNOY_SAVED = "tannoy_saved"
+DATA_PRAYER       = "prayer"
+
+# ── Prayer scheduler ────────────────────────────────────────────────────────
+ALADHAN_URL = "https://api.aladhan.com/v1/timingsByCity"
+
+PRAYER_NAMES = [
+    "fajr", "sunrise", "dhuhr", "asr", "sunset", "maghrib", "isha", "midnight",
+]

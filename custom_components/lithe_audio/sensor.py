@@ -1,105 +1,137 @@
-"""Sensor platform — exposes diagnostic & info sensors."""
+"""Sensor entities for Lithe Audio — read-only state."""
 from __future__ import annotations
 
-from homeassistant.components.sensor import SensorEntity
-from homeassistant.const import EntityCategory
-from homeassistant.core import HomeAssistant
+from homeassistant.components.sensor import SensorEntity, SensorStateClass
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from . import LitheAudioConfigEntry
+from .const import CONF_PRODUCT, DATA_COORDINATOR, DOMAIN, PRODUCT_NAMES, SOURCES
 from .coordinator import LitheAudioCoordinator
-from .entity import LitheAudioEntity
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: LitheAudioConfigEntry,
+    entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    coord = entry.runtime_data.coordinator
+    coordinator: LitheAudioCoordinator = hass.data[DOMAIN][entry.entry_id][DATA_COORDINATOR]
     async_add_entities([
-        SourceSensor(coord),
-        NowPlayingSensor(coord),
-        FirmwareSensor(coord),
-        PlayStateSensor(coord),
+        LitheSourceSensor(coordinator, entry),
+        LitheFirmwareSensor(coordinator, entry),
+        LitheMacSensor(coordinator, entry),
+        LitheWifiBandSensor(coordinator, entry),
+        LitheTimezoneSensor(coordinator, entry),
+        LitheUptimeSensor(coordinator, entry),
     ])
 
 
-class SourceSensor(LitheAudioEntity, SensorEntity):
-    """Current audio source (Spotify / AirPlay / etc)."""
+class _LitheBaseSensor(CoordinatorEntity[LitheAudioCoordinator], SensorEntity):
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
+    def __init__(self, coordinator: LitheAudioCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+        self._client = coordinator.client
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(identifiers={(DOMAIN, self._entry.data["host"])})
+
+    @property
+    def available(self) -> bool:
+        return self._client.state.connected
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        self.async_write_ha_state()
+
+
+class LitheSourceSensor(_LitheBaseSensor):
+    _attr_name = "Active Source"
     _attr_icon = "mdi:music-circle"
+    _attr_entity_category = None  # Visible in main view
 
-    def __init__(self, coordinator: LitheAudioCoordinator) -> None:
-        super().__init__(coordinator)
-        self._attr_unique_id = f"{self._device_unique_id}_source"
-        self._attr_name = "Source"
-
-    @property
-    def native_value(self) -> str | None:
-        return self._client.state.source_name or None
-
-
-class NowPlayingSensor(LitheAudioEntity, SensorEntity):
-    """Combined 'Artist — Title' for easy automation triggers."""
-
-    _attr_icon = "mdi:music"
-
-    def __init__(self, coordinator: LitheAudioCoordinator) -> None:
-        super().__init__(coordinator)
-        self._attr_unique_id = f"{self._device_unique_id}_now_playing"
-        self._attr_name = "Now Playing"
-
-    @property
-    def native_value(self) -> str | None:
-        s = self._client.state
-        if not s.title:
-            return None
-        if s.artist:
-            return f"{s.artist} — {s.title}"
-        return s.title
-
-    @property
-    def extra_state_attributes(self) -> dict:
-        s = self._client.state
-        return {
-            "title": s.title,
-            "artist": s.artist,
-            "album": s.album,
-            "duration_ms": s.duration_ms,
-            "position_ms": s.position_ms,
-            "art_url": s.art_url,
-        }
-
-
-class FirmwareSensor(LitheAudioEntity, SensorEntity):
-    """Firmware version (diagnostic)."""
-
-    _attr_icon = "mdi:chip"
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-
-    def __init__(self, coordinator: LitheAudioCoordinator) -> None:
-        super().__init__(coordinator)
-        self._attr_unique_id = f"{self._device_unique_id}_firmware"
-        self._attr_name = "Firmware"
-
-    @property
-    def native_value(self) -> str | None:
-        return self._client.state.firmware or None
-
-
-class PlayStateSensor(LitheAudioEntity, SensorEntity):
-    """Raw play state string — sometimes useful for automations."""
-
-    _attr_icon = "mdi:play-circle"
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_entity_registry_enabled_default = False
-
-    def __init__(self, coordinator: LitheAudioCoordinator) -> None:
-        super().__init__(coordinator)
-        self._attr_unique_id = f"{self._device_unique_id}_play_state"
-        self._attr_name = "Play State"
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.data['host']}_{entry.entry_id}_source"
 
     @property
     def native_value(self) -> str:
-        return self._client.state.play_state
+        return self._client.state.source_name
+
+
+class LitheFirmwareSensor(_LitheBaseSensor):
+    _attr_name = "Firmware"
+    _attr_icon = "mdi:chip"
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.data['host']}_{entry.entry_id}_firmware"
+
+    @property
+    def native_value(self) -> str:
+        return self._client.state.firmware or "Unknown"
+
+
+class LitheMacSensor(_LitheBaseSensor):
+    _attr_name = "MAC Address"
+    _attr_icon = "mdi:ethernet"
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.data['host']}_{entry.entry_id}_mac"
+
+    @property
+    def native_value(self) -> str:
+        return self._client.state.mac or "Unknown"
+
+
+class LitheWifiBandSensor(_LitheBaseSensor):
+    _attr_name = "Wi-Fi Band"
+    _attr_icon = "mdi:wifi"
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.data['host']}_{entry.entry_id}_wifi_band"
+
+    @property
+    def native_value(self) -> str:
+        return self._client.state.wifi_band or "Unknown"
+
+
+class LitheTimezoneSensor(_LitheBaseSensor):
+    _attr_name = "Timezone"
+    _attr_icon = "mdi:clock-outline"
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.data['host']}_{entry.entry_id}_timezone"
+
+    @property
+    def native_value(self) -> str:
+        return self._client.state.timezone or "Unknown"
+
+
+class LitheUptimeSensor(_LitheBaseSensor):
+    """Uptime from Cast HTTP — read via coordinator extra data."""
+    _attr_name = "Uptime"
+    _attr_icon = "mdi:timer-outline"
+    _attr_native_unit_of_measurement = "h"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.data['host']}_{entry.entry_id}_uptime"
+        self._uptime_h: float = 0.0
+
+    @property
+    def native_value(self) -> float:
+        return round(self._uptime_h, 1)
+
+    def set_uptime(self, hours: float) -> None:
+        self._uptime_h = hours
+        self.async_write_ha_state()

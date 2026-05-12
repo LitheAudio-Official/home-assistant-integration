@@ -1,49 +1,109 @@
-"""Number platform — exposes volume 0-100 as a number entity.
-
-The primary volume control is on the media player; this duplicate is
-useful for automations that want to set an exact integer level without
-dealing with the 0.0–1.0 float scale.
-"""
+"""Number entities for Lithe Audio DSP controls."""
 from __future__ import annotations
 
 from homeassistant.components.number import NumberEntity, NumberMode
-from homeassistant.const import EntityCategory, PERCENTAGE
-from homeassistant.core import HomeAssistant
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from . import LitheAudioConfigEntry
+from .const import (
+    CONF_PRODUCT, DATA_COORDINATOR, DOMAIN, DSP_BALANCE, DSP_LOUDNESS,
+    LS10_PRODUCTS, PRODUCT_PRO2,
+)
 from .coordinator import LitheAudioCoordinator
-from .entity import LitheAudioEntity
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: LitheAudioConfigEntry,
+    entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    async_add_entities([VolumeNumber(entry.runtime_data.coordinator)])
+    coordinator: LitheAudioCoordinator = hass.data[DOMAIN][entry.entry_id][DATA_COORDINATOR]
+    product = entry.data[CONF_PRODUCT]
+
+    if product not in LS10_PRODUCTS:
+        return
+
+    entities: list[NumberEntity] = [
+        LitheBalanceNumber(coordinator, entry),
+    ]
+
+    # PRO2 only: loudness slider -10 to +10 dB
+    if product == PRODUCT_PRO2:
+        entities.append(LitheLoudnessNumber(coordinator, entry))
+
+    async_add_entities(entities)
 
 
-class VolumeNumber(LitheAudioEntity, NumberEntity):
-    """Volume 0-100 as a number entity."""
+class _LitheBaseNumber(CoordinatorEntity[LitheAudioCoordinator], NumberEntity):
+    _attr_has_entity_name = True
 
-    _attr_icon = "mdi:volume-high"
-    _attr_native_min_value = 0
-    _attr_native_max_value = 100
-    _attr_native_step = 1
-    _attr_native_unit_of_measurement = PERCENTAGE
-    _attr_mode = NumberMode.SLIDER
-    _attr_entity_category = EntityCategory.CONFIG
-    _attr_entity_registry_enabled_default = False  # off by default; media_player has volume
-
-    def __init__(self, coordinator: LitheAudioCoordinator) -> None:
+    def __init__(self, coordinator: LitheAudioCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator)
-        self._attr_unique_id = f"{self._device_unique_id}_volume_number"
-        self._attr_name = "Volume"
+        self._entry = entry
+        self._client = coordinator.client
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(identifiers={(DOMAIN, self._entry.data["host"])})
+
+    @property
+    def available(self) -> bool:
+        return self._client.state.connected
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        self.async_write_ha_state()
+
+
+class LitheLoudnessNumber(_LitheBaseNumber):
+    """Loudness slider for WiFi PRO 2: -10 to +10 dB."""
+
+    _attr_name = "Loudness"
+    _attr_native_min_value = -10
+    _attr_native_max_value = 10
+    _attr_native_step = 1
+    _attr_native_unit_of_measurement = "dB"
+    _attr_mode = NumberMode.SLIDER
+    _attr_icon = "mdi:equalizer"
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.data['host']}_{entry.entry_id}_loudness"
+        self._value = 0
 
     @property
     def native_value(self) -> float:
-        return float(self._client.state.volume)
+        return self._value
 
     async def async_set_native_value(self, value: float) -> None:
-        await self._client.async_set_volume(int(value))
+        self._value = int(value)
+        await self._client.async_dsp_command(DSP_LOUDNESS, self._value)
+        self.async_write_ha_state()
+
+
+class LitheBalanceNumber(_LitheBaseNumber):
+    """Balance slider: -6 (full left) to +6 (full right)."""
+
+    _attr_name = "Balance"
+    _attr_native_min_value = -6
+    _attr_native_max_value = 6
+    _attr_native_step = 1
+    _attr_mode = NumberMode.SLIDER
+    _attr_icon = "mdi:pan-horizontal"
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.data['host']}_{entry.entry_id}_balance"
+        self._value = 0
+
+    @property
+    def native_value(self) -> float:
+        return self._value
+
+    async def async_set_native_value(self, value: float) -> None:
+        self._value = int(value)
+        await self._client.async_dsp_command(DSP_BALANCE, self._value)
+        self.async_write_ha_state()

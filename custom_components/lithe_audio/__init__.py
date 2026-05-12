@@ -1,261 +1,239 @@
-"""The Lithe Audio integration."""
+"""Lithe Audio integration for Home Assistant."""
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+import socket as _sock
 
-import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_HOST, CONF_PORT, Platform
+from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.exceptions import ConfigEntryNotReady
-from homeassistant.helpers import config_validation as cv
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.network import get_url
 
+from .cast_group import async_register_cast_group_service
 from .const import (
-    ATTR_CHIME_INDEX,
-    ATTR_DIRECT_PATH,
-    ATTR_PRESET_SLOT,
-    ATTR_RAW_CMD_TYPE,
-    ATTR_RAW_MBID,
-    ATTR_RAW_PAYLOAD,
-    CONF_CERT_KEY,
-    CONF_CERT_PEM,
-    CONF_MAC,
-    CONF_MODEL,
-    CONF_PLATFORM,
-    DEFAULT_PORT,
-    DOMAIN,
-    PLATFORM_LS10,
-    SERVICE_DELETE_PRESET,
-    SERVICE_PLAY_CHIME,
-    SERVICE_PLAY_DIRECT,
-    SERVICE_PLAY_PRESET,
-    SERVICE_REBOOT,
-    SERVICE_SAVE_PRESET,
-    SERVICE_SEND_RAW,
+    BT_DISC, BT_PAIR, CONF_CERT_PATH, CONF_HOST, CONF_KEY_PATH,
+    CONF_PORT, CONF_PRODUCT, CONF_USE_TLS, DATA_COORDINATOR, DOMAIN,
+    DSP_BALANCE, DSP_EQ, DSP_HIGHPASS, DSP_LOUDNESS, DSP_NIGHTMODE, DSP_OUTPUT,
+    EQ_PRESETS, HP_OPTIONS, LS9_PRODUCTS, OUT_OPTIONS, PRODUCT_CHIMES,
 )
 from .coordinator import LitheAudioCoordinator
-from .luci import LitheAudioClient
+from .lithe_client import LitheClient, LitheClientLS9
+from .prayer import async_register_prayer_service, async_unload_prayer
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [
+PLATFORMS = [
     Platform.MEDIA_PLAYER,
     Platform.BUTTON,
     Platform.NUMBER,
-    Platform.SENSOR,
+    Platform.SELECT,
     Platform.SWITCH,
+    Platform.SENSOR,
 ]
 
-# This integration is configured exclusively via the UI (config flow). The
-# explicit empty CONFIG_SCHEMA tells hassfest we're aware there's no YAML
-# config schema by design.
-CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
-
-@dataclass
-class LitheAudioRuntimeData:
-    """Holds runtime state attached to a ConfigEntry."""
-
-    client: LitheAudioClient
-    coordinator: LitheAudioCoordinator
-
-
-type LitheAudioConfigEntry = ConfigEntry[LitheAudioRuntimeData]
-
-
-# ── Service schemas ────────────────────────────────────────────────────────
-SERVICE_PLAY_CHIME_SCHEMA = vol.Schema({
-    vol.Required("entity_id"): cv.entity_ids,
-    vol.Required(ATTR_CHIME_INDEX): vol.All(int, vol.Range(min=1, max=15)),
-})
-SERVICE_PRESET_SLOT_SCHEMA = vol.Schema({
-    vol.Required("entity_id"): cv.entity_ids,
-    vol.Required(ATTR_PRESET_SLOT): vol.All(int, vol.Range(min=1, max=9)),
-})
-SERVICE_PLAY_DIRECT_SCHEMA = vol.Schema({
-    vol.Required("entity_id"): cv.entity_ids,
-    vol.Required(ATTR_DIRECT_PATH): cv.string,
-})
-SERVICE_SEND_RAW_SCHEMA = vol.Schema({
-    vol.Required("entity_id"): cv.entity_ids,
-    vol.Required(ATTR_RAW_MBID): vol.All(int, vol.Range(min=0, max=65535)),
-    vol.Required(ATTR_RAW_PAYLOAD): cv.string,
-    vol.Optional(ATTR_RAW_CMD_TYPE, default="set"): vol.In(["get", "set"]),
-})
-SERVICE_ENTITY_ONLY_SCHEMA = vol.Schema({
-    vol.Required("entity_id"): cv.entity_ids,
-})
-
-
-async def async_setup(hass: HomeAssistant, config: dict) -> bool:
-    """Register integration-wide services once, on first load."""
-    if hass.services.has_service(DOMAIN, SERVICE_PLAY_CHIME):
-        return True
-
-    async def _resolve_clients(call: ServiceCall) -> list[LitheAudioClient]:
-        """Map entity_ids in a service call back to their LitheAudioClient."""
-        entity_ids = call.data["entity_id"]
-        clients: list[LitheAudioClient] = []
-        ent_reg = er.async_get(hass)
-        for entity_id in entity_ids:
-            entry = ent_reg.async_get(entity_id)
-            if entry is None or entry.config_entry_id is None:
-                continue
-            config_entry = hass.config_entries.async_get_entry(entry.config_entry_id)
-            if config_entry is None or not hasattr(config_entry, "runtime_data"):
-                continue
-            runtime: LitheAudioRuntimeData = config_entry.runtime_data
-            if runtime.client not in clients:
-                clients.append(runtime.client)
-        return clients
-
-    async def _svc_play_chime(call: ServiceCall) -> None:
-        for client in await _resolve_clients(call):
-            await client.async_play_chime(call.data[ATTR_CHIME_INDEX])
-
-    async def _svc_play_preset(call: ServiceCall) -> None:
-        for client in await _resolve_clients(call):
-            await client.async_preset_play(call.data[ATTR_PRESET_SLOT])
-
-    async def _svc_save_preset(call: ServiceCall) -> None:
-        for client in await _resolve_clients(call):
-            await client.async_preset_save(call.data[ATTR_PRESET_SLOT])
-
-    async def _svc_delete_preset(call: ServiceCall) -> None:
-        for client in await _resolve_clients(call):
-            await client.async_preset_delete(call.data[ATTR_PRESET_SLOT])
-
-    async def _svc_play_direct(call: ServiceCall) -> None:
-        for client in await _resolve_clients(call):
-            await client.async_play_direct(call.data[ATTR_DIRECT_PATH])
-
-    async def _svc_send_raw(call: ServiceCall) -> None:
-        cmd_type_map = {"get": 0x01, "set": 0x02}
-        cmd_type = cmd_type_map.get(call.data[ATTR_RAW_CMD_TYPE], 0x02)
-        for client in await _resolve_clients(call):
-            await client.async_send_raw(
-                call.data[ATTR_RAW_MBID],
-                call.data[ATTR_RAW_PAYLOAD],
-                cmd_type,
-            )
-
-    async def _svc_reboot(call: ServiceCall) -> None:
-        for client in await _resolve_clients(call):
-            await client.async_reboot()
-
-    hass.services.async_register(DOMAIN, SERVICE_PLAY_CHIME, _svc_play_chime,
-                                 schema=SERVICE_PLAY_CHIME_SCHEMA)
-    hass.services.async_register(DOMAIN, SERVICE_PLAY_PRESET, _svc_play_preset,
-                                 schema=SERVICE_PRESET_SLOT_SCHEMA)
-    hass.services.async_register(DOMAIN, SERVICE_SAVE_PRESET, _svc_save_preset,
-                                 schema=SERVICE_PRESET_SLOT_SCHEMA)
-    hass.services.async_register(DOMAIN, SERVICE_DELETE_PRESET, _svc_delete_preset,
-                                 schema=SERVICE_PRESET_SLOT_SCHEMA)
-    hass.services.async_register(DOMAIN, SERVICE_PLAY_DIRECT, _svc_play_direct,
-                                 schema=SERVICE_PLAY_DIRECT_SCHEMA)
-    hass.services.async_register(DOMAIN, SERVICE_SEND_RAW, _svc_send_raw,
-                                 schema=SERVICE_SEND_RAW_SCHEMA)
-    hass.services.async_register(DOMAIN, SERVICE_REBOOT, _svc_reboot,
-                                 schema=SERVICE_ENTITY_ONLY_SCHEMA)
-    return True
-
-
-async def async_setup_entry(hass: HomeAssistant, entry: LitheAudioConfigEntry) -> bool:
-    """Set up a Lithe Audio speaker from a config entry."""
-    data = entry.data
-    host = data[CONF_HOST]
-    port = data.get(CONF_PORT, DEFAULT_PORT)
-    platform = data.get(CONF_PLATFORM, "LS9")
-
-    # The HA host IP is included in the LS10 registration JSON so the
-    # speaker knows who's controlling it. Best-effort lookup — falls back
-    # to 0.0.0.0 if HA can't determine its own URL.
-    ha_ip = "0.0.0.0"
+def _detect_local_ip() -> str:
     try:
-        import urllib.parse
-        url = get_url(hass, prefer_external=False, allow_internal=True)
-        parsed = urllib.parse.urlparse(url)
-        if parsed.hostname:
-            ha_ip = parsed.hostname
-    except Exception:  # noqa: BLE001
-        pass
+        s = _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
 
-    # Resolve the client certificate for encrypted-connection speakers.
-    # Priority: explicit entry data → bundled defaults shipped with the
-    # integration. The bundled certs live in custom_components/lithe_audio/
-    # certs/ and are loaded in an executor thread to avoid blocking the
-    # event loop on disk I/O during setup.
-    cert_pem: str | None = None
-    cert_key: str | None = None
-    if platform == PLATFORM_LS10:
-        cert_pem = data.get(CONF_CERT_PEM)
-        cert_key = data.get(CONF_CERT_KEY)
-        if not (cert_pem and cert_key):
-            cert_pem, cert_key = await hass.async_add_executor_job(
-                _load_bundled_certs,
-            )
 
-    client = LitheAudioClient(
-        host=host,
-        port=port,
-        platform=platform,
-        client_cert_pem=cert_pem,
-        client_cert_key=cert_key,
-        client_app_id="homeassistant.lithe_audio",
-        client_app_version="0.1.0",
-        client_ip=ha_ip,
-    )
-    coordinator = LitheAudioCoordinator(hass, entry, client)
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Set up Lithe Audio from a config entry."""
+    product = entry.data[CONF_PRODUCT]
+    host    = entry.data[CONF_HOST]
+    port    = entry.data[CONF_PORT]
+    use_tls = entry.data.get(CONF_USE_TLS, True)
+    cert    = entry.data.get(CONF_CERT_PATH) or None
+    key     = entry.data.get(CONF_KEY_PATH) or None
 
-    try:
-        await client.async_start()
-        # Wait briefly for first connection — but don't block forever
-        await coordinator.async_config_entry_first_refresh()
-    except Exception as exc:
-        await client.async_stop()
-        raise ConfigEntryNotReady(
-            f"Could not connect to Lithe Audio at {host}:{port}: {exc}"
-        ) from exc
+    local_ip = _detect_local_ip()
 
-    entry.runtime_data = LitheAudioRuntimeData(client=client, coordinator=coordinator)
+    ClientCls = LitheClientLS9 if product in LS9_PRODUCTS else LitheClient
+    client = ClientCls(host, port, use_tls, cert, key, local_ip)
+
+    coordinator = LitheAudioCoordinator(hass, client)
+    await coordinator.async_config_entry_first_refresh()
+
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
+        DATA_COORDINATOR: coordinator,
+    }
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+
+    _register_services(hass)
+    await async_register_prayer_service(hass)
+    await async_register_cast_group_service(hass)
+
     return True
 
 
-async def _async_update_listener(
-    hass: HomeAssistant, entry: LitheAudioConfigEntry,
-) -> None:
-    """Reload integration when options change."""
-    await hass.config_entries.async_reload(entry.entry_id)
-
-
-async def async_unload_entry(hass: HomeAssistant, entry: LitheAudioConfigEntry) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
-        runtime: LitheAudioRuntimeData = entry.runtime_data
-        await runtime.client.async_stop()
+        bucket = hass.data.get(DOMAIN, {})
+        entry_data = bucket.pop(entry.entry_id, None)
+        if entry_data:
+            coordinator: LitheAudioCoordinator = entry_data[DATA_COORDINATOR]
+            await coordinator.async_shutdown()
+
+        # If this was the last config entry, tear down shared services too
+        has_other_entries = any(
+            isinstance(v, dict) and DATA_COORDINATOR in v
+            for v in bucket.values()
+        )
+        if not has_other_entries:
+            await async_unload_prayer(hass)
+            for svc in (
+                "play_chime", "play_url", "play_favourite",
+                "set_dsp_eq", "set_dsp_output", "set_dsp_nightmode",
+                "set_dsp_highpass", "set_dsp_balance", "set_dsp_loudness",
+                "bluetooth_pair", "bluetooth_disconnect",
+                "reboot", "set_name", "play_group", "set_prayer_schedule",
+            ):
+                if hass.services.has_service(DOMAIN, svc):
+                    hass.services.async_remove(DOMAIN, svc)
     return unload_ok
 
 
-def _load_bundled_certs() -> tuple[str | None, str | None]:
-    """Load the integration-bundled client certificate and key.
+# ── Service dispatch ────────────────────────────────────────────────────────
 
-    Returns (pem_contents, key_contents) or (None, None) if either file is
-    missing. Runs in an executor thread; never call directly from the
-    event loop.
+def _resolve_coordinators(hass: HomeAssistant, call: ServiceCall) -> list[LitheAudioCoordinator]:
+    """Resolve a service call's targets to coordinator instances.
+
+    Looks at entity_id (single or list) on the call data and matches each one
+    to the integration's entry that owns it.
     """
-    from pathlib import Path
-    base = Path(__file__).parent / "certs"
-    pem_path = base / "client.pem"
-    key_path = base / "client.key"
-    if not (pem_path.is_file() and key_path.is_file()):
-        return None, None
-    try:
-        return pem_path.read_text(), key_path.read_text()
-    except OSError:
-        return None, None
+    bucket = hass.data.get(DOMAIN, {})
+    if not bucket:
+        return []
+
+    raw = call.data.get("entity_id")
+    if isinstance(raw, str):
+        targets = [raw]
+    elif isinstance(raw, list):
+        targets = list(raw)
+    else:
+        targets = []
+
+    coordinators: list[LitheAudioCoordinator] = []
+    seen: set[str] = set()
+
+    if targets:
+        ent_reg = er.async_get(hass)
+        for eid in targets:
+            ent = ent_reg.async_get(eid)
+            if not ent or not ent.config_entry_id:
+                continue
+            entry_data = bucket.get(ent.config_entry_id)
+            if entry_data and entry_data[DATA_COORDINATOR] not in coordinators:
+                coordinators.append(entry_data[DATA_COORDINATOR])
+                seen.add(ent.config_entry_id)
+        if coordinators:
+            return coordinators
+
+    # Fallback: every configured speaker
+    for entry_id, entry_data in bucket.items():
+        if not isinstance(entry_data, dict) or DATA_COORDINATOR not in entry_data:
+            continue
+        if entry_id in seen:
+            continue
+        coordinators.append(entry_data[DATA_COORDINATOR])
+    return coordinators
+
+
+def _register_services(hass: HomeAssistant) -> None:
+    """Register all Lithe Audio service actions."""
+
+    if hass.services.has_service(DOMAIN, "play_chime"):
+        return  # Already registered for another entry
+
+    async def _for_each(call: ServiceCall, fn) -> None:
+        coords = _resolve_coordinators(hass, call)
+        if not coords:
+            raise HomeAssistantError("No Lithe Audio speaker matched the service target")
+        for coord in coords:
+            try:
+                await fn(coord.client)
+            except Exception as e:
+                _LOGGER.error("%s failed on %s: %s", call.service, coord.client.host, e)
+
+    # ── Playback / chime ────────────────────────────────────────────────
+    async def svc_play_chime(call: ServiceCall) -> None:
+        n = int(call.data.get("chime_number", 1))
+        await _for_each(call, lambda c: c.async_play_chime(max(1, min(n, 15))))
+
+    async def svc_play_url(call: ServiceCall) -> None:
+        url = str(call.data.get("url", "")).strip()
+        if not url:
+            return
+        await _for_each(call, lambda c: c.async_play_url(url))
+
+    async def svc_play_favourite(call: ServiceCall) -> None:
+        slot = int(call.data.get("slot", 1))
+        await _for_each(call, lambda c: c.async_play_favourite(slot))
+
+    async def svc_set_name(call: ServiceCall) -> None:
+        name = str(call.data.get("name", "")).strip()
+        if not name:
+            return
+        await _for_each(call, lambda c: c.async_set_name(name))
+
+    # ── DSP ─────────────────────────────────────────────────────────────
+    async def svc_set_eq(call: ServiceCall) -> None:
+        preset = call.data.get("preset", "Normal")
+        idx = EQ_PRESETS.index(preset) if preset in EQ_PRESETS else 0
+        await _for_each(call, lambda c: c.async_dsp_command(DSP_EQ, idx))
+
+    async def svc_set_output(call: ServiceCall) -> None:
+        mode = call.data.get("mode", "Stereo")
+        idx = OUT_OPTIONS.index(mode) if mode in OUT_OPTIONS else 0
+        await _for_each(call, lambda c: c.async_dsp_command(DSP_OUTPUT, idx))
+
+    async def svc_set_nightmode(call: ServiceCall) -> None:
+        val = 1 if call.data.get("enabled") else 0
+        await _for_each(call, lambda c: c.async_dsp_command(DSP_NIGHTMODE, val))
+
+    async def svc_set_highpass(call: ServiceCall) -> None:
+        freq = call.data.get("frequency", "OFF")
+        idx = HP_OPTIONS.index(freq) if freq in HP_OPTIONS else 0
+        await _for_each(call, lambda c: c.async_dsp_command(DSP_HIGHPASS, idx))
+
+    async def svc_set_balance(call: ServiceCall) -> None:
+        val = max(-6, min(6, int(call.data.get("balance", 0))))
+        await _for_each(call, lambda c: c.async_dsp_command(DSP_BALANCE, val))
+
+    async def svc_set_loudness(call: ServiceCall) -> None:
+        val = int(call.data.get("value", 0))
+        await _for_each(call, lambda c: c.async_dsp_command(DSP_LOUDNESS, val))
+
+    # ── Bluetooth / system ──────────────────────────────────────────────
+    async def svc_bt_pair(call: ServiceCall) -> None:
+        await _for_each(call, lambda c: c.async_bluetooth(BT_PAIR))
+
+    async def svc_bt_disc(call: ServiceCall) -> None:
+        await _for_each(call, lambda c: c.async_bluetooth(BT_DISC))
+
+    async def svc_reboot(call: ServiceCall) -> None:
+        await _for_each(call, lambda c: c.async_reboot())
+
+    hass.services.async_register(DOMAIN, "play_chime",       svc_play_chime)
+    hass.services.async_register(DOMAIN, "play_url",         svc_play_url)
+    hass.services.async_register(DOMAIN, "play_favourite",   svc_play_favourite)
+    hass.services.async_register(DOMAIN, "set_name",         svc_set_name)
+    hass.services.async_register(DOMAIN, "set_dsp_eq",       svc_set_eq)
+    hass.services.async_register(DOMAIN, "set_dsp_output",   svc_set_output)
+    hass.services.async_register(DOMAIN, "set_dsp_nightmode", svc_set_nightmode)
+    hass.services.async_register(DOMAIN, "set_dsp_highpass", svc_set_highpass)
+    hass.services.async_register(DOMAIN, "set_dsp_balance",  svc_set_balance)
+    hass.services.async_register(DOMAIN, "set_dsp_loudness", svc_set_loudness)
+    hass.services.async_register(DOMAIN, "bluetooth_pair",   svc_bt_pair)
+    hass.services.async_register(DOMAIN, "bluetooth_disconnect", svc_bt_disc)
+    hass.services.async_register(DOMAIN, "reboot",           svc_reboot)

@@ -1,94 +1,130 @@
-"""Switch platform — mute, AUX input enable, Bluetooth power."""
+"""Switch entities for Lithe Audio toggles."""
 from __future__ import annotations
 
 from homeassistant.components.switch import SwitchEntity
-from homeassistant.const import EntityCategory
-from homeassistant.core import HomeAssistant
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from . import LitheAudioConfigEntry
-from .const import BT_OFF, BT_ON, MB_BLUETOOTH
+from .const import (
+    BT_DISC, BT_OFF, BT_ON, CONF_PRODUCT, DATA_COORDINATOR, DOMAIN,
+    DSP_LOUDNESS, DSP_NIGHTMODE, LS10_PRODUCTS, PRODUCT_IO1, PRODUCT_PRO2, PRODUCT_V3,
+)
 from .coordinator import LitheAudioCoordinator
-from .entity import LitheAudioEntity
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: LitheAudioConfigEntry,
+    entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    coord = entry.runtime_data.coordinator
-    async_add_entities([
-        MuteSwitch(coord),
-        LineInSwitch(coord),
-        BluetoothSwitch(coord),
-    ])
+    coordinator: LitheAudioCoordinator = hass.data[DOMAIN][entry.entry_id][DATA_COORDINATOR]
+    product = entry.data[CONF_PRODUCT]
+
+    if product not in LS10_PRODUCTS:
+        return
+
+    entities: list[SwitchEntity] = [
+        LitheNightModeSwitch(coordinator, entry),
+    ]
+
+    # V3 and iO1: loudness is on/off
+    if product in (PRODUCT_V3, PRODUCT_IO1):
+        entities.append(LitheLoudnessSwitch(coordinator, entry))
+
+    # PRO2 and V3 have Bluetooth
+    if product in (PRODUCT_PRO2, PRODUCT_V3):
+        entities.append(LitheBluetoothSwitch(coordinator, entry))
+
+    async_add_entities(entities)
 
 
-class MuteSwitch(LitheAudioEntity, SwitchEntity):
-    """Mute switch — handy for automations that want a binary toggle."""
+class _LitheBaseSwitch(CoordinatorEntity[LitheAudioCoordinator], SwitchEntity):
+    _attr_has_entity_name = True
 
-    _attr_icon = "mdi:volume-mute"
-
-    def __init__(self, coordinator: LitheAudioCoordinator) -> None:
+    def __init__(self, coordinator: LitheAudioCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator)
-        self._attr_unique_id = f"{self._device_unique_id}_mute"
-        self._attr_name = "Mute"
+        self._entry = entry
+        self._client = coordinator.client
+        self._state = False
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(identifiers={(DOMAIN, self._entry.data["host"])})
+
+    @property
+    def available(self) -> bool:
+        return self._client.state.connected
 
     @property
     def is_on(self) -> bool:
-        return self._client.state.muted
+        return self._state
 
-    async def async_turn_on(self, **_kwargs) -> None:
-        await self._client.async_set_mute(True)
-
-    async def async_turn_off(self, **_kwargs) -> None:
-        await self._client.async_set_mute(False)
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        self.async_write_ha_state()
 
 
-class LineInSwitch(LitheAudioEntity, SwitchEntity):
-    """Enable / disable AUX / line-in input."""
+class LitheNightModeSwitch(_LitheBaseSwitch):
+    """Night Mode switch."""
 
-    _attr_icon = "mdi:audio-input-rca"
-    _attr_entity_category = EntityCategory.CONFIG
-    _attr_entity_registry_enabled_default = False
+    _attr_name = "Night Mode"
+    _attr_icon = "mdi:weather-night"
 
-    def __init__(self, coordinator: LitheAudioCoordinator) -> None:
-        super().__init__(coordinator)
-        self._attr_unique_id = f"{self._device_unique_id}_linein"
-        self._attr_name = "Line In"
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.data['host']}_{entry.entry_id}_nightmode"
 
-    @property
-    def is_on(self) -> bool:
-        # Source IDs 13 (AUX) and 14 (SPDIF) indicate line-in is active
-        return self._client.state.source_id in (13, 14)
+    async def async_turn_on(self, **kwargs) -> None:
+        self._state = True
+        await self._client.async_dsp_command(DSP_NIGHTMODE, 1)
+        self.async_write_ha_state()
 
-    async def async_turn_on(self, **_kwargs) -> None:
-        await self._client.async_input_start()
-
-    async def async_turn_off(self, **_kwargs) -> None:
-        await self._client.async_input_stop()
+    async def async_turn_off(self, **kwargs) -> None:
+        self._state = False
+        await self._client.async_dsp_command(DSP_NIGHTMODE, 0)
+        self.async_write_ha_state()
 
 
-class BluetoothSwitch(LitheAudioEntity, SwitchEntity):
-    """Enable Bluetooth receiver mode."""
+class LitheLoudnessSwitch(_LitheBaseSwitch):
+    """Loudness ON/OFF switch for V3 and iO1."""
 
+    _attr_name = "Loudness"
+    _attr_icon = "mdi:volume-plus"
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.data['host']}_{entry.entry_id}_loudness_sw"
+
+    async def async_turn_on(self, **kwargs) -> None:
+        self._state = True
+        await self._client.async_dsp_command(DSP_LOUDNESS, 1)
+        self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs) -> None:
+        self._state = False
+        await self._client.async_dsp_command(DSP_LOUDNESS, 0)
+        self.async_write_ha_state()
+
+
+class LitheBluetoothSwitch(_LitheBaseSwitch):
+    """Bluetooth enable/disable switch."""
+
+    _attr_name = "Bluetooth"
     _attr_icon = "mdi:bluetooth"
-    _attr_entity_category = EntityCategory.CONFIG
-    _attr_entity_registry_enabled_default = False
 
-    def __init__(self, coordinator: LitheAudioCoordinator) -> None:
-        super().__init__(coordinator)
-        self._attr_unique_id = f"{self._device_unique_id}_bluetooth"
-        self._attr_name = "Bluetooth"
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.data['host']}_{entry.entry_id}_bluetooth"
 
-    @property
-    def is_on(self) -> bool:
-        # Source 19 = Bluetooth is currently the active input
-        return self._client.state.source_id == 19
+    async def async_turn_on(self, **kwargs) -> None:
+        self._state = True
+        await self._client.async_bluetooth(BT_ON)
+        self.async_write_ha_state()
 
-    async def async_turn_on(self, **_kwargs) -> None:
-        await self._client.async_send_raw(MB_BLUETOOTH, BT_ON)
-
-    async def async_turn_off(self, **_kwargs) -> None:
-        await self._client.async_send_raw(MB_BLUETOOTH, BT_OFF)
+    async def async_turn_off(self, **kwargs) -> None:
+        self._state = False
+        await self._client.async_bluetooth(BT_OFF)
+        self.async_write_ha_state()

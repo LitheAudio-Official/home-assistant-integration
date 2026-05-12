@@ -1,114 +1,72 @@
 {
   "config": {
+    "title": "Lithe Audio",
     "step": {
       "user": {
-        "title": "Add a Lithe Audio speaker",
-        "description": "Scan the network for speakers automatically, or enter a speaker's IP address manually.",
+        "title": "Set up Lithe Audio speaker",
+        "description": "Enter the details for your Lithe Audio WiFi speaker. LS10 speakers (PRO2, V3, iO1) require TLS certificates.",
         "data": {
-          "mode": "How would you like to find your speaker?"
+          "product":   "Speaker model",
+          "host":      "IP address",
+          "port":      "Port (default 7777)",
+          "cert_path": "Certificate path (cert/client.pem) — LS10 only",
+          "key_path":  "Key path (cert/client.key) — LS10 only"
         }
       },
-      "scan": {
-        "title": "Select a speaker",
-        "description": "Found {count} speaker(s) on the network."
-      },
-      "manual": {
-        "title": "Enter speaker details",
-        "description": "Enter the IP address of the speaker, then choose the model. The integration will use the correct connection method automatically.",
+      "zeroconf_confirm": {
+        "title": "Lithe Audio speaker found",
+        "description": "A Lithe Audio speaker was found at {host} ({name}). Select the speaker model and enter certificate paths if required.",
         "data": {
-          "host": "IP address",
-          "port": "Port (default 7777)",
-          "name": "Friendly name",
-          "model": "Speaker model"
+          "product":   "Speaker model",
+          "cert_path": "Certificate path",
+          "key_path":  "Key path"
         }
-      },
-      "confirm": {
-        "title": "Confirm",
-        "description": "Add {host}:{port} ({model}) to Home Assistant?"
       }
     },
     "error": {
-      "cannot_connect": "Could not connect to the speaker. Check that the IP address is correct and the speaker is on the same network as Home Assistant.",
-      "unknown": "Unexpected error - see the Home Assistant log for details."
+      "cannot_connect": "Cannot connect to the speaker. Check the IP address and that the speaker is online.",
+      "invalid_auth":   "Authentication failed. Check certificate paths.",
+      "unknown":        "Unexpected error."
     },
     "abort": {
-      "already_configured": "This speaker is already configured.",
-      "no_devices_found": "No Lithe Audio speakers were found on the network.",
-      "cannot_connect": "Could not establish a secure connection to the speaker. Check that the IP address is correct and the speaker is on the same network as Home Assistant."
+      "already_configured": "This speaker is already configured."
+    }
+  },
+  "entity": {
+    "button": {
+      "reboot":        { "name": "Reboot" },
+      "factory_reset": { "name": "Factory Reset" }
+    },
+    "select": {
+      "eq_preset":       { "name": "EQ Preset" },
+      "speaker_output":  { "name": "Speaker Output" },
+      "high_pass_filter":{ "name": "High Pass Filter" },
+      "speaker_tuning":  { "name": "Speaker Tuning" }
+    },
+    "number": {
+      "loudness": { "name": "Loudness" },
+      "balance":  { "name": "Balance" }
+    },
+    "switch": {
+      "night_mode": { "name": "Night Mode" },
+      "loudness":   { "name": "Loudness" },
+      "bluetooth":  { "name": "Bluetooth" }
+    },
+    "sensor": {
+      "active_source": { "name": "Active Source" },
+      "firmware":      { "name": "Firmware" },
+      "mac_address":   { "name": "MAC Address" },
+      "wifi_band":     { "name": "Wi-Fi Band" },
+      "timezone":      { "name": "Timezone" },
+      "uptime":        { "name": "Uptime" }
     }
   },
   "services": {
-    "play_chime": {
-      "name": "Play chime",
-      "description": "Trigger a built-in audio cue on the speaker (doorbell, alarm, notification, etc).",
-      "fields": {
-        "chime_index": {
-          "name": "Chime number",
-          "description": "Number of the built-in cue to play (1-15, depending on speaker model)."
-        }
-      }
-    },
-    "play_preset": {
-      "name": "Play preset",
-      "description": "Play a saved favourite by slot number.",
-      "fields": {
-        "preset_slot": {
-          "name": "Preset slot",
-          "description": "Favourite slot number (1-9)."
-        }
-      }
-    },
-    "save_preset": {
-      "name": "Save preset",
-      "description": "Save the currently playing item into a favourite slot.",
-      "fields": {
-        "preset_slot": {
-          "name": "Preset slot",
-          "description": "Favourite slot number (1-9)."
-        }
-      }
-    },
-    "delete_preset": {
-      "name": "Delete preset",
-      "description": "Clear a saved favourite slot.",
-      "fields": {
-        "preset_slot": {
-          "name": "Preset slot",
-          "description": "Favourite slot number (1-9)."
-        }
-      }
-    },
-    "play_direct": {
-      "name": "Play URL or file",
-      "description": "Play an audio URL, or a built-in file on the speaker.",
-      "fields": {
-        "path": {
-          "name": "URL or file path",
-          "description": "An http(s) URL, or a built-in file path."
-        }
-      }
-    },
-    "send_raw_command": {
-      "name": "Send advanced command",
-      "description": "Advanced - send a low-level command to the speaker. Most users will not need this.",
-      "fields": {
-        "mbid": {
-          "name": "Command ID",
-          "description": "Numeric command identifier."
-        },
-        "payload": {
-          "name": "Payload",
-          "description": "Command payload (text)."
-        },
-        "cmd_type": {
-          "name": "Command type",
-          "description": "Get (read) or Set (write)."
-        }
-      }
-    },
-    "reboot": {
-      "name": "Reboot",
-      "description": "Reboot the speaker."
-    }
+    "play_chime":           { "name": "Play Chime",            "description": "Play a built-in chime." },
+    "play_url":             { "name": "Play URL",              "description": "Push a direct audio URL to the speaker." },
+    "play_favourite":       { "name": "Play Favourite",        "description": "Play a saved favourite by slot." },
+    "set_name":             { "name": "Set Name",              "description": "Set the speaker's friendly name." },
+    "play_group":           { "name": "Play to Cast Group",    "description": "Play a URL to a Cast group with synchronised LUCI volume." },
+    "set_prayer_schedule":  { "name": "Set Prayer Schedule",   "description": "Schedule daily prayer-time announcements." }
   }
 }
