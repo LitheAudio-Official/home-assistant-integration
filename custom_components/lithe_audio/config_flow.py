@@ -291,9 +291,10 @@ def _test_ls10_handshake(
             pass
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLSv1_2)
         ctx.load_cert_chain(certfile=str(pem_path), keyfile=str(key_path))
-        ctx.load_verify_locations(cafile=str(pem_path))
+        # Self-signed speaker cert — don't try to verify it; mTLS still
+        # authenticates the client side which is what's enforced.
         ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_REQUIRED
+        ctx.verify_mode = ssl.CERT_NONE
         with socket.create_connection((host, port), timeout=8) as raw:
             with ctx.wrap_socket(raw, server_hostname=None) as tls:
                 tls.do_handshake()

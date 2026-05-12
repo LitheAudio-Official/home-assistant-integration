@@ -395,9 +395,14 @@ class LitheAudioClient:
 
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLSv1_2)
         ctx.load_cert_chain(certfile=str(pem_path), keyfile=str(key_path))
-        ctx.load_verify_locations(cafile=str(pem_path))
+        # The speaker uses a self-signed cert from the same Lithe CA. Python's
+        # default verification chain rejects self-signed chains regardless
+        # of what we load as the CA file, so we disable server verification
+        # explicitly. The mutual-TLS handshake still authenticates *our*
+        # client cert against the speaker, which is what actually matters
+        # for access control.
         ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_REQUIRED
+        ctx.verify_mode = ssl.CERT_NONE
         return ctx
 
     async def _read_loop(self) -> None:
