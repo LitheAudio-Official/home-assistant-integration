@@ -46,6 +46,9 @@ Copy `custom_components/lithe_audio/` into your HA `config/custom_components/` a
 
 ## Changelog
 
+### 1.1.6
+- **FIX** `load_cert_chain` no longer runs on the event loop — TLS context construction moved into an executor. Was throwing "Detected blocking call" warnings on every connect attempt and could stall HA's event loop.
+
 ### 1.1.5
 - **FIX** Revert TLS verify_mode back to `CERT_NONE` (the proven-working approach from v1.0). The v1.1.4 attempt to use `CERT_REQUIRED` with the bundled cert as the CA broke LS10 connections — Python rejects self-signed certs in the chain even when the CA matches. Mutual auth is still preserved via `load_cert_chain`.
 
