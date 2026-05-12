@@ -46,6 +46,14 @@ Copy `custom_components/lithe_audio/` into your HA `config/custom_components/` a
 
 ## Changelog
 
+### 1.1.7 — CRITICAL FIX
+- **FIX** LUCI packet header was 9 bytes (CRC=1 byte) but the spec requires 10 bytes (CRC=2 bytes). Every TX packet was one byte short; speakers silently dropped commands and never replied with state. This explains why connections succeeded but nothing else worked — no transport, no volume, no chimes, no source updates, no metadata.
+- **FIX** RX parser corrected to match — header is now correctly read as 10 bytes with DataLen at offset 8 (was offset 7).
+- **FIX** Same correction applied to the LS9 transactional parser and the MB#112 DSP packet builder.
+- **FIX** CRC field now sent as documented zeros (`0x0000`) instead of a 1-byte byte-sum that wasn't being validated anyway.
+
+This is the bug that caused all the symptoms today: entities created but Unknown, controls dead in both directions, no metadata, no state. Wire format now matches the published spec byte-for-byte.
+
 ### 1.1.6
 - **FIX** `load_cert_chain` no longer runs on the event loop — TLS context construction moved into an executor. Was throwing "Detected blocking call" warnings on every connect attempt and could stall HA's event loop.
 
