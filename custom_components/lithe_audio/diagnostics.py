@@ -1,61 +1,69 @@
-"""Diagnostics support for Lithe Audio.
-
-Returns a redacted snapshot of the integration state for inclusion in
-GitHub issue reports — without leaking client certificates, private keys,
-or precise host IPs.
-"""
+"""Diagnostics support for Lithe Audio."""
 from __future__ import annotations
 
 from typing import Any
 
 from homeassistant.components.diagnostics import async_redact_data
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from . import LitheAudioConfigEntry
-from .const import CONF_CERT_KEY, CONF_CERT_PEM, CONF_MAC
+from .const import (
+    CONF_CERT_PATH, CONF_KEY_PATH, DATA_COORDINATOR, DOMAIN, PRODUCT_NAMES, caps,
+)
+from .coordinator import LitheAudioCoordinator
 
-REDACT_KEYS = {CONF_CERT_PEM, CONF_CERT_KEY, "host", CONF_MAC, "mac", "serial"}
+# Don't leak cert paths or device MAC in the downloadable diagnostic
+TO_REDACT = {CONF_CERT_PATH, CONF_KEY_PATH, "mac", "mac_address"}
 
 
 async def async_get_config_entry_diagnostics(
-    hass: HomeAssistant, entry: LitheAudioConfigEntry,
+    hass: HomeAssistant, entry: ConfigEntry
 ) -> dict[str, Any]:
     """Return diagnostics for a config entry."""
-    runtime = entry.runtime_data
-    state = runtime.client.state
+    entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+    coord: LitheAudioCoordinator | None = entry_data.get(DATA_COORDINATOR)
+
+    product = entry.data.get("product", "")
+
+    state_snapshot: dict[str, Any] = {}
+    fav_count = 0
+    if coord and coord.client:
+        s = coord.client.state
+        state_snapshot = {
+            "connected":    s.connected,
+            "name":         s.name,
+            "firmware":     s.firmware,
+            "model":        s.model,
+            "wifi_band":    s.wifi_band,
+            "timezone":     s.timezone,
+            "cast_version": s.cast_version,
+            "net_mode":     s.net_mode,
+            "play_state":   s.play_state,
+            "source_id":    s.source_id,
+            "source_name":  s.source_name,
+            "volume":       s.volume,
+            "muted":        s.muted,
+            "is_live":      s.is_live,
+            "bt_status":    s.bt_status,
+            "title":        s.title,
+            "artist":       s.artist,
+            "album":        s.album,
+            "duration_ms":  s.duration_ms,
+        }
+        fav_count = len(s.favourites)
+
     return {
         "entry": {
-            "title": entry.title,
+            "title":   entry.title,
             "version": entry.version,
-            "data": async_redact_data(dict(entry.data), REDACT_KEYS),
-            "unique_id": "**REDACTED**" if entry.unique_id else None,
+            "data":    async_redact_data(dict(entry.data), TO_REDACT),
+            "options": dict(entry.options),
         },
-        "client": {
-            "platform": runtime.client.platform,
-            "port": runtime.client.port,
-            "is_ls10": runtime.client.is_ls10,
-            "has_cert": bool(entry.data.get(CONF_CERT_PEM)),
+        "product": {
+            "id":           product,
+            "display_name": PRODUCT_NAMES.get(product, product),
+            "capabilities": caps(product),
         },
-        "state": async_redact_data(
-            {
-                "connected": state.connected,
-                "play_state": state.play_state,
-                "volume": state.volume,
-                "muted": state.muted,
-                "source_id": state.source_id,
-                "source_name": state.source_name,
-                "title": state.title,
-                "artist": state.artist,
-                "album": state.album,
-                "duration_ms": state.duration_ms,
-                "position_ms": state.position_ms,
-                "name": state.name,
-                "model": state.model,
-                "firmware": state.firmware,
-                "mac": state.mac,
-                "serial": state.serial,
-                "timezone": state.timezone,
-            },
-            REDACT_KEYS,
-        ),
+        "state":           async_redact_data(state_snapshot, TO_REDACT),
+        "favourite_count": fav_count,
     }

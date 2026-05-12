@@ -44,14 +44,59 @@ def _detect_local_ip() -> str:
         return "127.0.0.1"
 
 
+def _infer_product(entry_data: dict) -> str:
+    """Guess a product ID from legacy/incomplete config-entry data.
+
+    Used when migrating entries created by older versions that didn't
+    persist `product`. Defaults err on the conservative side.
+    """
+    from .const import (
+        PRODUCT_MICRO, PRODUCT_PRO, PRODUCT_PRO2, PRODUCT_V2, PRODUCT_V3,
+        PRODUCT_IO1,
+    )
+    # Sometimes older entries stored a 'platform' string instead
+    plat = (entry_data.get("platform") or "").upper()
+    title_hint = (entry_data.get("title") or entry_data.get("name") or "").upper()
+    cert_present = bool(entry_data.get(CONF_CERT_PATH)) or entry_data.get(CONF_USE_TLS)
+
+    # Title-based hint first
+    if "PRO2" in title_hint or "PRO 2" in title_hint:  return PRODUCT_PRO2
+    if "V3" in title_hint:                              return PRODUCT_V3
+    if "IO1" in title_hint:                             return PRODUCT_IO1
+    if "MICRO" in title_hint:                           return PRODUCT_MICRO
+    if "V2" in title_hint:                              return PRODUCT_V2
+    if "PRO" in title_hint:                             return PRODUCT_PRO
+
+    # Platform-based fallback
+    if plat == "LS10" or cert_present:                  return PRODUCT_PRO2
+    return PRODUCT_V2
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Lithe Audio from a config entry."""
+    # Migration: entries created by older versions may not have `product`.
+    if CONF_PRODUCT not in entry.data:
+        inferred = _infer_product({**entry.data, "title": entry.title})
+        _LOGGER.warning(
+            "Lithe Audio entry %s has no '%s' key — migrating with inferred value '%s'. "
+            "Delete and re-add the entry if this is wrong.",
+            entry.title, CONF_PRODUCT, inferred,
+        )
+        new_data = {**entry.data, CONF_PRODUCT: inferred}
+        hass.config_entries.async_update_entry(entry, data=new_data)
+
     product = entry.data[CONF_PRODUCT]
     host    = entry.data[CONF_HOST]
-    port    = entry.data[CONF_PORT]
-    use_tls = entry.data.get(CONF_USE_TLS, True)
+    port    = entry.data.get(CONF_PORT, 7777)
+    use_tls = entry.data.get(CONF_USE_TLS, product not in LS9_PRODUCTS)
     cert    = entry.data.get(CONF_CERT_PATH) or None
     key     = entry.data.get(CONF_KEY_PATH) or None
+
+    # Fall back to bundled certs if a TLS product has no cert path
+    if use_tls and not (cert and key):
+        from .const import BUNDLED_CERT_KEY, BUNDLED_CERT_PEM
+        cert = cert or BUNDLED_CERT_PEM
+        key  = key  or BUNDLED_CERT_KEY
 
     local_ip = _detect_local_ip()
 
