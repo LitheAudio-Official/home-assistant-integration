@@ -264,11 +264,10 @@ class LitheClient:
             0x02,
             byte_val,
         ])
-        # Build a raw MB#112 packet wrapping the sub-packet — 10-byte header
-        data = sub + b"\x00"
-        data_len = len(data)
+        # DataLen counts payload bytes only — NUL terminator is separate
+        data_len = len(sub)
         header = struct.pack("<HBHBHH", 0xAAAA, 0x02, MB_DSP, 0, 0x0000, data_len)
-        pkt = header + data
+        pkt = header + sub + b"\x00"
         if self._writer and not self._writer.is_closing():
             self._writer.write(pkt)
             await self._writer.drain()
@@ -319,15 +318,17 @@ class LitheClient:
             offset 3-4:  MBID      (2 bytes, BE on RX)
             offset 5:    Status    (1 byte)
             offset 6-7:  CRC       (2 bytes)
-            offset 8-9:  DataLen   (2 bytes, BE on RX)
-        Payload then runs from offset 10 for DataLen bytes, followed by 0x00.
+            offset 8-9:  DataLen   (2 bytes, BE on RX) — payload length only
+
+        Wire format: [10-byte header][DataLen-byte payload][1-byte NUL]
+        Total bytes consumed per packet: 10 + DataLen + 1.
         """
         while len(self._buf) >= 10:
             try:
                 data_len = struct.unpack_from(">H", self._buf, 8)[0]
             except struct.error:
                 break
-            total = 10 + data_len  # NUL is counted inside data_len already
+            total = 10 + data_len + 1  # +1 for the NUL terminator after payload
             if len(self._buf) < total:
                 break
 
@@ -356,10 +357,10 @@ class LitheClient:
             return
 
         elif mbid == MB_DEVICE_NAME:
-            self.state.name = payload
+            self.state.name = payload.strip()
 
         elif mbid == MB_FIRMWARE:
-            self.state.firmware = payload
+            self.state.firmware = payload.strip()
 
         elif mbid == MB_VOLUME:
             try:
@@ -401,10 +402,10 @@ class LitheClient:
             self._parse_favourites(payload)
 
         elif mbid == MB_BT_STATUS:
-            self.state.bt_status = payload
+            self.state.bt_status = payload.strip()
 
         elif mbid == MB_TIMEZONE:
-            self.state.timezone = payload
+            self.state.timezone = payload.strip()
 
         else:
             changed = False
@@ -438,9 +439,26 @@ class LitheClient:
                     return str(v)
             return ""
 
-        self.state.title  = _first("Title", "title", "track", "Track", "name", "Name")
-        self.state.artist = _first("Artist", "artist", "Performer", "performer")
-        self.state.album  = _first("Album", "album", "AlbumName", "album_name")
+        self.state.title  = _first(
+            "Title", "title", "track", "Track", "TrackTitle", "track_title",
+            "name", "Name", "currentTitle", "current_title", "song", "Song",
+            "currentSong", "current_song",
+        )
+        self.state.artist = _first(
+            "Artist", "artist", "Performer", "performer",
+            "currentArtist", "current_artist", "ArtistName", "artist_name",
+        )
+        self.state.album  = _first(
+            "Album", "album", "AlbumName", "album_name",
+            "currentAlbum", "current_album",
+        )
+
+        # If title is empty but artist isn't, the firmware probably swapped
+        # them — many LinkPlay-derived firmwares put the track name into
+        # "Artist" when streaming from Spotify Connect. Use artist as title.
+        if not self.state.title and self.state.artist:
+            self.state.title = self.state.artist
+            self.state.artist = ""
 
         # Artwork — try every key we've seen across LinkPlay-based firmwares
         art = _first(
@@ -603,15 +621,14 @@ class LitheClient:
             MBID      : 2 bytes, LE
             Status    : 1 byte      — 0x00
             CRC       : 2 bytes, LE — 0x0000 (CRC disabled — speaker doesn't validate)
-            DataLen   : 2 bytes, LE — length of payload INCLUDING the trailing NUL
+            DataLen   : 2 bytes, LE — length of payload EXCLUDING the trailing NUL
         Body:
-            Payload (UTF-8) + 0x00 NUL terminator
+            Payload (UTF-8) + 0x00 NUL terminator (terminator is OUTSIDE DataLen)
         """
-        data = payload.encode("utf-8") + b"\x00"
+        data = payload.encode("utf-8")
         data_len = len(data)
-        # struct: H=2LE, B=1, H=2LE, B=1, H=2LE (CRC), H=2LE (DataLen)
         header = struct.pack("<HBHBHH", 0xAAAA, cmd_type, mbid, 0, 0x0000, data_len)
-        return header + data
+        return header + data + b"\x00"
 
     async def _send(self, cmd_type: int, mbid: int, payload: str) -> None:
         if self._writer and not self._writer.is_closing():
@@ -664,7 +681,7 @@ class LitheClientLS9(LitheClient):
                             data_len = struct.unpack_from(">H", buf, 8)[0]
                         except struct.error:
                             break
-                        total = 10 + data_len
+                        total = 10 + data_len + 1
                         if len(buf) < total:
                             break
                         r_mbid = struct.unpack_from(">H", buf, 3)[0]
