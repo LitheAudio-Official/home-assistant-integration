@@ -253,11 +253,10 @@ class LitheClient:
             0x02,
             byte_val,
         ])
-        # Build a raw MB#112 packet wrapping the sub-packet
+        # Build a raw MB#112 packet wrapping the sub-packet — 10-byte header
         data = sub + b"\x00"
         data_len = len(data)
-        crc = sum(data) & 0xFF
-        header = struct.pack("<HBHBBH", 0xAAAA, 0x02, MB_DSP, 0, crc, data_len)
+        header = struct.pack("<HBHBHH", 0xAAAA, 0x02, MB_DSP, 0, 0x0000, data_len)
         pkt = header + data
         if self._writer and not self._writer.is_closing():
             self._writer.write(pkt)
@@ -301,19 +300,28 @@ class LitheClient:
             self._notify()
 
     def _process_buffer(self) -> None:
-        """Parse all complete packets from buffer."""
-        while len(self._buf) >= 9:
-            # RX header: RemoteID(2) CmdType(1) MBID(2,BE) Status(1) CRC(2) DataLen(2,BE)
+        """Parse all complete packets from buffer.
+
+        RX header layout (10 bytes total, per LUCI spec):
+            offset 0-1:  RemoteID  (2 bytes)
+            offset 2:    CmdType   (1 byte)
+            offset 3-4:  MBID      (2 bytes, BE on RX)
+            offset 5:    Status    (1 byte)
+            offset 6-7:  CRC       (2 bytes)
+            offset 8-9:  DataLen   (2 bytes, BE on RX)
+        Payload then runs from offset 10 for DataLen bytes, followed by 0x00.
+        """
+        while len(self._buf) >= 10:
             try:
-                data_len = struct.unpack_from(">H", self._buf, 7)[0]
+                data_len = struct.unpack_from(">H", self._buf, 8)[0]
             except struct.error:
                 break
-            total = 9 + data_len + 1  # +1 for NUL terminator
+            total = 10 + data_len  # NUL is counted inside data_len already
             if len(self._buf) < total:
                 break
 
             mbid = struct.unpack_from(">H", self._buf, 3)[0]
-            payload_bytes = self._buf[9:9 + data_len]
+            payload_bytes = self._buf[10:10 + data_len]
             try:
                 payload = payload_bytes.decode("utf-8", "replace").rstrip("\x00")
             except Exception:
@@ -482,11 +490,22 @@ class LitheClient:
 
     @staticmethod
     def _build_packet(cmd_type: int, mbid: int, payload: str) -> bytes:
-        """Build a TX packet: RemoteID(2,LE) CmdType(1) MBID(2,LE) Status(1) CRC(1) DataLen(2,LE) Payload NUL."""
+        """Build a TX packet matching the LUCI spec exactly:
+
+        Header (10 bytes):
+            RemoteID  : 2 bytes, LE — always 0xAAAA
+            CmdType   : 1 byte      — 0x01 GET, 0x02 SET
+            MBID      : 2 bytes, LE
+            Status    : 1 byte      — 0x00
+            CRC       : 2 bytes, LE — 0x0000 (CRC disabled — speaker doesn't validate)
+            DataLen   : 2 bytes, LE — length of payload INCLUDING the trailing NUL
+        Body:
+            Payload (UTF-8) + 0x00 NUL terminator
+        """
         data = payload.encode("utf-8") + b"\x00"
         data_len = len(data)
-        crc = sum(data) & 0xFF
-        header = struct.pack("<HBHBBH", 0xAAAA, cmd_type, mbid, 0, crc, data_len)
+        # struct: H=2LE, B=1, H=2LE, B=1, H=2LE (CRC), H=2LE (DataLen)
+        header = struct.pack("<HBHBHH", 0xAAAA, cmd_type, mbid, 0, 0x0000, data_len)
         return header + data
 
     async def _send(self, cmd_type: int, mbid: int, payload: str) -> None:
@@ -535,16 +554,16 @@ class LitheClientLS9(LitheClient):
                     if not chunk:
                         break
                     buf += chunk
-                    while len(buf) >= 9:
+                    while len(buf) >= 10:
                         try:
-                            data_len = struct.unpack_from(">H", buf, 7)[0]
+                            data_len = struct.unpack_from(">H", buf, 8)[0]
                         except struct.error:
                             break
-                        total = 9 + data_len + 1
+                        total = 10 + data_len
                         if len(buf) < total:
                             break
                         r_mbid = struct.unpack_from(">H", buf, 3)[0]
-                        r_payload = buf[9:9 + data_len].decode("utf-8", "replace").rstrip("\x00")
+                        r_payload = buf[10:10 + data_len].decode("utf-8", "replace").rstrip("\x00")
                         buf = buf[total:]
                         if r_mbid != MB_PLAYBACK_AUTH:
                             responses.append((r_mbid, r_payload))
