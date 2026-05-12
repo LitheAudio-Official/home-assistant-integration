@@ -92,25 +92,34 @@ class LitheClient:
 
     # ── Connection ─────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _build_tls_context(cert_path: str | None, key_path: str | None) -> ssl.SSLContext:
+        """Build the TLS context. Runs in an executor — touches the filesystem."""
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        ctx.maximum_version = ssl.TLSVersion.TLSv1_2
+        # IMPORTANT order: disable check_hostname BEFORE lowering verify_mode —
+        # PROTOCOL_TLS_CLIENT enables check_hostname by default, and Python
+        # raises ValueError if verify_mode is lowered while it's still on.
+        ctx.check_hostname = False
+        # CERT_NONE: the Lithe speakers use self-signed server certs against
+        # the same CA as the client cert, and Python's chain validation
+        # rejects self-signed certs even when the CA is in the trust store.
+        # Mutual auth is still preserved because we present our client cert.
+        ctx.verify_mode = ssl.CERT_NONE
+        if cert_path and key_path:
+            ctx.load_cert_chain(cert_path, key_path)
+        return ctx
+
     async def async_connect(self) -> None:
         """Open connection and register with the speaker."""
         ctx = None
         if self.use_tls:
-            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-            ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-            ctx.maximum_version = ssl.TLSVersion.TLSv1_2
-            # IMPORTANT order: disable check_hostname BEFORE lowering verify_mode —
-            # PROTOCOL_TLS_CLIENT enables check_hostname by default, and Python
-            # raises ValueError if verify_mode is lowered while it's still on.
-            ctx.check_hostname = False
-            # CERT_NONE: don't validate the speaker's server cert. The Lithe
-            # speakers use self-signed server certs against the same CA as the
-            # client cert, and Python's chain validation rejects self-signed
-            # certs even when the CA is in the trust store. Mutual auth is
-            # still preserved because we present our client cert below.
-            ctx.verify_mode = ssl.CERT_NONE
-            if self.cert_path and self.key_path:
-                ctx.load_cert_chain(self.cert_path, self.key_path)
+            # load_cert_chain is a blocking file read — do it in an executor
+            loop = asyncio.get_running_loop()
+            ctx = await loop.run_in_executor(
+                None, self._build_tls_context, self.cert_path, self.key_path
+            )
 
         self._reader, self._writer = await asyncio.wait_for(
             asyncio.open_connection(self.host, self.port, ssl=ctx),
