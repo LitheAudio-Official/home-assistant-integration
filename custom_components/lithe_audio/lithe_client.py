@@ -398,8 +398,22 @@ class LitheClient:
             self._parse_device_info(payload)
 
         elif mbid == MB_NETWORK_INFO:
-            # Same parser handles the network-info shape (MAC, SSID, band, mode)
-            self._parse_device_info(payload)
+            # MB#91 has the format: <Interface>:<MAC>
+            # E.g. "Eth0:CC:90:93:35:03:BA" or "Wlan0:CC:90:93:10:2E:8C"
+            # The speaker sends both — we prefer Wlan since LS10 speakers are wireless.
+            p = payload.strip()
+            if p and ":" in p:
+                iface, _, mac = p.partition(":")
+                iface_lower = iface.strip().lower()
+                mac = mac.strip()
+                # Wifi MAC takes precedence over Ethernet
+                if iface_lower.startswith("wlan") or iface_lower == "wifi":
+                    self.state.mac = mac
+                    self.state.wifi_band = self.state.wifi_band or "Wi-Fi"
+                elif iface_lower.startswith("eth"):
+                    # Only set MAC if we haven't seen a wifi MAC yet
+                    if not self.state.mac or self.state.mac.startswith("Eth"):
+                        self.state.mac = mac
 
         elif mbid == MB_FAVOURITES:
             self._parse_favourites(payload)
@@ -428,12 +442,17 @@ class LitheClient:
             _LOGGER.debug("Could not parse now-playing JSON")
             return
 
-        # Some firmwares wrap the real data inside "Window CONTENTS" or "data"
-        w = data
+        # The Lithe firmware wraps real metadata inside "Window CONTENTS".
+        # The OUTER "Title" is just the view name (e.g. "PlayView") — don't
+        # read from there or we'll pick up the view name as the track title.
+        w = None
         for wrapper in ("Window CONTENTS", "WindowContents", "window_contents", "data", "Data"):
-            if isinstance(w.get(wrapper), dict):
-                w = w[wrapper]
+            if isinstance(data.get(wrapper), dict):
+                w = data[wrapper]
                 break
+        if w is None:
+            _LOGGER.debug("MB#42 has no Window CONTENTS wrapper, skipping")
+            return
 
         def _first(*keys: str) -> str:
             for k in keys:
@@ -463,8 +482,9 @@ class LitheClient:
             self.state.title = self.state.artist
             self.state.artist = ""
 
-        # Artwork — try every key we've seen across LinkPlay-based firmwares
+        # Artwork — real key on Lithe firmware (CR443GP_3713) is "CoverArtUrl"
         art = _first(
+            "CoverArtUrl", "CoverArtURL", "coverarturl",
             "AlbumArt", "Artwork", "ArtworkURI", "AlbumArtURI",
             "albumart", "artwork", "albumArt", "artworkUri", "AlbumArtUri",
             "CoverArt", "coverart", "cover", "Cover", "Image", "image",
