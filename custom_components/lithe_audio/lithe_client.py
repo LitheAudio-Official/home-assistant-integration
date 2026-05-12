@@ -13,10 +13,10 @@ from typing import Callable, Optional
 from .const import (
     DEFAULT_PORT, MB_BLUETOOTH, MB_BROWSE, MB_BT_STATUS, MB_CHIME,
     MB_DEVICE_INFO, MB_DEVICE_NAME, MB_DSP, MB_FACTORY_RESET, MB_FAVOURITES,
-    MB_FIRMWARE, MB_MUTE, MB_NOW_PLAYING, MB_PLAY_STATE, MB_PLAYBACK_AUTH,
-    MB_POSITION, MB_REBOOT_REQ, MB_REGISTER, MB_SOURCE, MB_TIMEZONE,
-    MB_TRANSPORT, MB_VOLUME, MUTE_OFF, MUTE_ON, PLAY_STATES, SOURCES,
-    TRANSPORT_NEXT, TRANSPORT_PAUSE, TRANSPORT_PLAY, TRANSPORT_PREV,
+    MB_FIRMWARE, MB_MUTE, MB_NETWORK_INFO, MB_NOW_PLAYING, MB_PLAY_STATE,
+    MB_PLAYBACK_AUTH, MB_POSITION, MB_REBOOT_REQ, MB_REGISTER, MB_SOURCE,
+    MB_TIMEZONE, MB_TRANSPORT, MB_VOLUME, MUTE_OFF, MUTE_ON, PLAY_STATES,
+    SOURCES, TRANSPORT_NEXT, TRANSPORT_PAUSE, TRANSPORT_PLAY, TRANSPORT_PREV,
     TRANSPORT_RESUME, TRANSPORT_STOP,
 )
 
@@ -41,6 +41,7 @@ class SpeakerState:
     volume: int = 50
     muted: bool = False
     position_ms: int = 0
+    position_updated_at: float = 0.0   # asyncio loop time when MB#49 last seen
 
     # Now playing
     title: str = ""
@@ -175,13 +176,15 @@ class LitheClient:
 
     async def async_refresh(self) -> None:
         """Request all state from speaker."""
-        for mb in (MB_DEVICE_NAME, MB_FIRMWARE, MB_DEVICE_INFO,
+        for mb in (MB_DEVICE_NAME, MB_FIRMWARE, MB_DEVICE_INFO, MB_NETWORK_INFO,
                    MB_VOLUME, MB_MUTE, MB_SOURCE, MB_PLAY_STATE,
-                   MB_NOW_PLAYING, MB_TIMEZONE, MB_BT_STATUS):
+                   MB_NOW_PLAYING, MB_POSITION, MB_TIMEZONE, MB_BT_STATUS):
             await self._send(0x01, mb, "")
             await asyncio.sleep(0.05)
-        # Favourites list
+        # Favourites — try both known command variants in case firmware differs
         await self._send(0x02, MB_FAVOURITES, "FAV_LIST")
+        await asyncio.sleep(0.05)
+        await self._send(0x01, MB_FAVOURITES, "")
 
     async def async_request_favourites(self) -> None:
         await self._send(0x02, MB_FAVOURITES, "FAV_LIST")
@@ -227,7 +230,15 @@ class LitheClient:
         await self._send(0x02, MB_DEVICE_NAME, name)
 
     async def async_play_chime(self, chime_number: int) -> None:
-        await self._send(0x02, MB_CHIME, f"play {int(chime_number)}")
+        """Play a chime by slot number.
+
+        Spec format is `play <N>` on MB#80. Some firmwares accept just the
+        slot number, or `PLAY:<N>`. We send the documented form; if the
+        speaker is silently rejecting it, debug logging will show no MB#80
+        ACK and we can try alternatives.
+        """
+        n = int(chime_number)
+        await self._send(0x02, MB_CHIME, f"play {n}")
 
     async def async_bluetooth(self, command: str) -> None:
         """BT command: ON / OFF / ENTPAIR / DISCONNECT."""
@@ -332,6 +343,12 @@ class LitheClient:
 
     def _handle_push(self, mbid: int, payload: str) -> None:
         """Handle an incoming message from the speaker."""
+        # Debug visibility of every push — invaluable for diagnosing missing
+        # state, wrong JSON keys, unexpected MB# numbers, etc.
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            preview = payload[:200] + ("…" if len(payload) > 200 else "")
+            _LOGGER.debug("RX MB#%d (%d bytes): %s", mbid, len(payload), preview)
+
         changed = True
 
         if mbid == MB_PLAYBACK_AUTH:
@@ -365,6 +382,8 @@ class LitheClient:
         elif mbid == MB_POSITION:
             try:
                 self.state.position_ms = int(payload)
+                import time as _time
+                self.state.position_updated_at = _time.time()
             except ValueError:
                 pass
 
@@ -372,6 +391,10 @@ class LitheClient:
             self._parse_now_playing(payload)
 
         elif mbid == MB_DEVICE_INFO:
+            self._parse_device_info(payload)
+
+        elif mbid == MB_NETWORK_INFO:
+            # Same parser handles the network-info shape (MAC, SSID, band, mode)
             self._parse_device_info(payload)
 
         elif mbid == MB_FAVOURITES:
@@ -390,60 +413,142 @@ class LitheClient:
             self._notify()
 
     def _parse_now_playing(self, payload: str) -> None:
+        """Parse MB#42 now-playing JSON.
+
+        Different firmwares use different key names. We try a broad set of
+        candidates for each field so this works across versions.
+        """
         try:
             data = json.loads(payload)
-            w = data.get("Window CONTENTS", data)
-            self.state.title       = w.get("Title", "") or ""
-            self.state.artist      = w.get("Artist", "") or ""
-            self.state.album       = w.get("Album", "") or ""
-            self.state.artwork_url = w.get("AlbumArt", "") or w.get("Artwork", "") or ""
-            try:
-                self.state.duration_ms = int(w.get("TotalTime", 0) or 0)
-            except (TypeError, ValueError):
-                self.state.duration_ms = 0
-            # Live streams report no duration
-            self.state.is_live = (self.state.duration_ms == 0)
         except Exception:
             _LOGGER.debug("Could not parse now-playing JSON")
+            return
+
+        # Some firmwares wrap the real data inside "Window CONTENTS" or "data"
+        w = data
+        for wrapper in ("Window CONTENTS", "WindowContents", "window_contents", "data", "Data"):
+            if isinstance(w.get(wrapper), dict):
+                w = w[wrapper]
+                break
+
+        def _first(*keys: str) -> str:
+            for k in keys:
+                v = w.get(k)
+                if v:
+                    return str(v)
+            return ""
+
+        self.state.title  = _first("Title", "title", "track", "Track", "name", "Name")
+        self.state.artist = _first("Artist", "artist", "Performer", "performer")
+        self.state.album  = _first("Album", "album", "AlbumName", "album_name")
+
+        # Artwork — try every key we've seen across LinkPlay-based firmwares
+        art = _first(
+            "AlbumArt", "Artwork", "ArtworkURI", "AlbumArtURI",
+            "albumart", "artwork", "albumArt", "artworkUri", "AlbumArtUri",
+            "CoverArt", "coverart", "cover", "Cover", "Image", "image",
+            "logo", "Logo", "Icon", "icon",
+        )
+        # Some firmwares return a relative path — only accept if it looks like a URL
+        if art and (art.startswith("http://") or art.startswith("https://")):
+            self.state.artwork_url = art
+        elif art:
+            # Relative path — try to construct a URL using the speaker IP
+            self.state.artwork_url = f"http://{self.host}{art}" if art.startswith("/") else f"http://{self.host}/{art}"
+        else:
+            self.state.artwork_url = ""
+
+        # Duration — try numerous keys, accept ms or seconds
+        duration_raw = None
+        for k in ("TotalTime", "totaltime", "Duration", "duration", "track_duration", "Length", "length"):
+            if k in w and w[k] not in (None, "", 0):
+                duration_raw = w[k]
+                break
+        try:
+            d = int(duration_raw) if duration_raw is not None else 0
+            # If under 10000, the speaker probably reports seconds; convert to ms
+            if 0 < d < 10000:
+                d *= 1000
+            self.state.duration_ms = d
+        except (TypeError, ValueError):
+            self.state.duration_ms = 0
+
+        # Live streams report no duration
+        self.state.is_live = (self.state.duration_ms == 0)
 
     def _parse_device_info(self, payload: str) -> None:
-        # Two shapes seen: JSON dict, or "key: value" line
+        """Parse MB#208 device info.
+
+        Three shapes observed across firmwares:
+          1) JSON dict
+          2) Single "key: value" line
+          3) Multi-line "key: value\nkey: value\n…" block
+        """
+        # Comprehensive key map — keys are normalised (lower, no spaces, no underscores)
+        attr_map = {
+            # name / friendly
+            "devicename":     "name",
+            "networkname":    "name",
+            "groupname":      "name",
+            "name":           "name",
+            # model
+            "model":          "model",
+            "modelname":      "model",
+            "modelid":        "model",
+            "deviceid":       "model",
+            "hardware":       "model",
+            # firmware
+            "fwversion":      "firmware",
+            "firmware":       "firmware",
+            "firmwareversion":"firmware",
+            "swversion":      "firmware",
+            "version":        "firmware",
+            "release":        "firmware",
+            # mac
+            "mac":            "mac",
+            "macaddress":     "mac",
+            "macaddr":        "mac",
+            "ethernet":       "mac",
+            "ethermac":       "mac",
+            "wifimac":        "mac",
+            "wlanmac":        "mac",
+            "bssid":          "mac",
+            # wifi band / mode
+            "wifiband":       "wifi_band",
+            "band":           "wifi_band",
+            "wifimode":       "wifi_band",
+            "wlanmode":       "wifi_band",
+            # net mode
+            "netmode":        "net_mode",
+            "networkmode":    "net_mode",
+            # cast
+            "castversion":    "cast_version",
+            "castfwversion":  "cast_version",
+        }
+
+        def _norm(k: str) -> str:
+            return k.strip().lower().replace(" ", "").replace("_", "").replace("-", "")
+
+        def _apply(key: str, val: str) -> None:
+            attr = attr_map.get(_norm(key))
+            if attr and val:
+                setattr(self.state, attr, str(val).strip())
+
+        # JSON first
         try:
             data = json.loads(payload)
-            attr_map = {
-                "model":        "model",
-                "fw_version":   "firmware",
-                "mac":          "mac",
-                "mac_address":  "mac",
-                "wifi_band":    "wifi_band",
-                "net_mode":     "net_mode",
-                "cast_version": "cast_version",
-                "network_name": "name",
-            }
-            for k, v in data.items():
-                attr = attr_map.get(k.lower())
-                if attr and v:
-                    setattr(self.state, attr, str(v))
-            return
+            if isinstance(data, dict):
+                for k, v in data.items():
+                    _apply(k, v)
+                return
         except Exception:
             pass
-        if ":" in payload:
-            key, _, val = payload.partition(":")
-            key = key.strip().lower().replace(" ", "_")
-            val = val.strip()
-            attr_map = {
-                "model":         "model",
-                "fw_version":    "firmware",
-                "mac":           "mac",
-                "mac_address":   "mac",
-                "wifi_band":     "wifi_band",
-                "net_mode":      "net_mode",
-                "cast_version":  "cast_version",
-                "network_name":  "name",
-            }
-            attr = attr_map.get(key)
-            if attr:
-                setattr(self.state, attr, val)
+
+        # Fallback: line-by-line key:value parsing
+        for line in payload.splitlines():
+            if ":" in line:
+                key, _, val = line.partition(":")
+                _apply(key, val)
 
     def _parse_favourites(self, payload: str) -> None:
         """Parse MB#70 favourites payload.

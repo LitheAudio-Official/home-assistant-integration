@@ -162,6 +162,15 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
         return p // 1000 if p else None
 
     @property
+    def media_position_updated_at(self):
+        """When position was last fetched. Lets HA extrapolate live position."""
+        ts = self._client.state.position_updated_at
+        if not ts:
+            return None
+        from datetime import datetime, timezone
+        return datetime.fromtimestamp(ts, tz=timezone.utc)
+
+    @property
     def media_content_type(self) -> MediaType:
         return MediaType.MUSIC
 
