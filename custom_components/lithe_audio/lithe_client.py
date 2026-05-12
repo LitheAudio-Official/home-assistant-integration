@@ -99,10 +99,23 @@ class LitheClient:
             ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             ctx.minimum_version = ssl.TLSVersion.TLSv1_2
             ctx.maximum_version = ssl.TLSVersion.TLSv1_2
-            ctx.verify_mode = ssl.CERT_NONE
+            # IMPORTANT: disable check_hostname BEFORE touching verify_mode —
+            # PROTOCOL_TLS_CLIENT enables check_hostname by default, and Python
+            # raises ValueError if verify_mode is lowered while it's still on.
             ctx.check_hostname = False
             if self.cert_path and self.key_path:
+                # Mutual auth — load our client cert/key. The Lithe-issued
+                # cert is also the CA that signed the speaker's server cert,
+                # so we trust it via load_verify_locations.
                 ctx.load_cert_chain(self.cert_path, self.key_path)
+                try:
+                    ctx.load_verify_locations(self.cert_path)
+                    ctx.verify_mode = ssl.CERT_REQUIRED
+                except (ssl.SSLError, OSError) as e:
+                    _LOGGER.debug("Could not load CA from cert: %s — using CERT_NONE", e)
+                    ctx.verify_mode = ssl.CERT_NONE
+            else:
+                ctx.verify_mode = ssl.CERT_NONE
 
         self._reader, self._writer = await asyncio.wait_for(
             asyncio.open_connection(self.host, self.port, ssl=ctx),
