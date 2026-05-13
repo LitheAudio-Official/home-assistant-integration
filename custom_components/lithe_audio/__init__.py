@@ -116,7 +116,64 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await async_register_prayer_service(hass)
     await async_register_cast_group_service(hass)
 
+    # Apply Prayer Scheduler options if user has configured them via UI
+    await _apply_prayer_options(hass, entry)
+
+    # Reload the integration when options change so the scheduler picks up edits
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
+
     return True
+
+
+async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload integration so Prayer Scheduler picks up new schedule."""
+    await hass.config_entries.async_reload(entry.entry_id)
+
+
+async def _apply_prayer_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """If user has configured Prayer in Options Flow, start the scheduler."""
+    opts = entry.options or {}
+    prayer_cfg = opts.get("prayer") or {}
+    if not prayer_cfg.get("enabled"):
+        return
+
+    host = entry.data.get("host")
+    entries_cfg = prayer_cfg.get("entries", {}) or {}
+    if not entries_cfg:
+        return
+
+    # Convert UI per-prayer entries into the format set_prayer_schedule expects.
+    # Each entry targets THIS speaker only — the user configures per-speaker via
+    # the Options Flow on each integration card.
+    entries_list = []
+    for prayer_name, e in entries_cfg.items():
+        entries_list.append({
+            "prayer":   prayer_name,
+            "speakers": [host],
+            "url":      e.get("url"),
+            "volume":   int(e.get("volume", 70)),
+            "days":     e.get("days", "daily"),
+        })
+    if not entries_list:
+        return
+
+    try:
+        await hass.services.async_call(
+            DOMAIN, "set_prayer_schedule",
+            {
+                "city":    prayer_cfg.get("city", "London"),
+                "country": prayer_cfg.get("country", "GB"),
+                "method":  int(prayer_cfg.get("method", 2)),
+                "entries": entries_list,
+            },
+            blocking=False,
+        )
+        _LOGGER.info(
+            "Applied Prayer Schedule for %s — %d entries",
+            host, len(entries_list),
+        )
+    except Exception as e:
+        _LOGGER.error("Failed to apply Prayer Schedule: %s", e)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -137,7 +194,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if not has_other_entries:
             await async_unload_prayer(hass)
             for svc in (
-                "play_chime", "play_url", "play_favourite",
+                "play_chime", "play_url", "play_favourite", "save_favourite",
+                "play_quran_juz", "play_adhan",
                 "set_dsp_eq", "set_dsp_output", "set_dsp_nightmode",
                 "set_dsp_highpass", "set_dsp_balance", "set_dsp_loudness",
                 "bluetooth_pair", "bluetooth_disconnect",
@@ -236,6 +294,53 @@ def _register_services(hass: HomeAssistant) -> None:
         slot = int(call.data.get("slot", 1))
         await _for_each(call, lambda c: c.async_save_favourite(slot))
 
+    async def svc_play_quran_juz(call: ServiceCall) -> None:
+        """Play a specific Juz of the Quran via the tannoy flow."""
+        from .const import QURAN_JUZ
+        juz = int(call.data.get("juz", 1))
+        juz = max(1, min(30, juz))
+        url = QURAN_JUZ.get(juz)
+        if not url:
+            _LOGGER.error("Quran Juz %d not in preset table", juz)
+            return
+        volume = int(call.data.get("volume", 70))
+        coords = _resolve_coordinators(hass, call)
+        speakers = [c.client.host for c in coords]
+        if not speakers:
+            _LOGGER.warning("play_quran_juz: no target speakers resolved")
+            return
+        await hass.services.async_call(
+            "notify", "lithe_tannoy",
+            {
+                "message": url,
+                "data": {"mode": "start", "volume": volume, "speakers": speakers},
+            },
+            blocking=False,
+        )
+
+    async def svc_play_adhan(call: ServiceCall) -> None:
+        """Play one of the preset Adhan recordings via the tannoy flow."""
+        from .const import ADHAN_PRESETS
+        preset = call.data.get("preset", "Azan 1 — Standard")
+        url = ADHAN_PRESETS.get(preset)
+        if not url:
+            _LOGGER.error("Adhan preset %r not in preset table", preset)
+            return
+        volume = int(call.data.get("volume", 70))
+        coords = _resolve_coordinators(hass, call)
+        speakers = [c.client.host for c in coords]
+        if not speakers:
+            _LOGGER.warning("play_adhan: no target speakers resolved")
+            return
+        await hass.services.async_call(
+            "notify", "lithe_tannoy",
+            {
+                "message": url,
+                "data": {"mode": "start", "volume": volume, "speakers": speakers},
+            },
+            blocking=False,
+        )
+
     async def svc_set_name(call: ServiceCall) -> None:
         name = str(call.data.get("name", "")).strip()
         if not name:
@@ -284,6 +389,8 @@ def _register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(DOMAIN, "play_url",         svc_play_url)
     hass.services.async_register(DOMAIN, "play_favourite",   svc_play_favourite)
     hass.services.async_register(DOMAIN, "save_favourite",   svc_save_favourite)
+    hass.services.async_register(DOMAIN, "play_quran_juz",   svc_play_quran_juz)
+    hass.services.async_register(DOMAIN, "play_adhan",       svc_play_adhan)
     hass.services.async_register(DOMAIN, "set_name",         svc_set_name)
     hass.services.async_register(DOMAIN, "set_dsp_eq",       svc_set_eq)
     hass.services.async_register(DOMAIN, "set_dsp_output",   svc_set_output)

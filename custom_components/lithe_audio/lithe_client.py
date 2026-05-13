@@ -415,11 +415,27 @@ class LitheClient:
         await self._send(0x02, MB_DEVICE_NAME, name)
 
     async def async_play_chime(self, chime_number: int) -> None:
-        """Trigger an embedded audiocue via LUCI.
+        """Trigger an embedded audiocue.
 
-        Method per Lithe vendor docs:
-          - Slots 1-9: MB#80 SET "play N"
-          - Slots 10-15: MB#41 SET "PLAYITEM:DIRECT:/system/usr/songN.mp3"
+        Uses the same sequence as the working Prayer Scheduler / tannoy
+        notify path (notify.py _tannoy_start). The key insight: simply
+        sending MB#80 or MB#41 doesn't work when another source (Spotify
+        Connect) owns the audio path. We have to pause the current source
+        FIRST so the audio mixer can route the chime through.
+
+        Sequence:
+          1. Save current state (so we can restore after)
+          2. Unmute if muted (chime needs audible path)
+          3. Pause current source so it relinquishes the audio path
+          4. Brief wait (150ms) for the audio routing to settle
+          5. Fire chime via MB#41 PLAYITEM:DIRECT (this is the path proven
+             to work in the prayer/tannoy flow — it switches source to
+             Direct URL, plays the file, then naturally ends)
+
+        Slots 1-15 all use MB#41 PLAYITEM:DIRECT path with the file
+        /system/usr/songN.mp3 — that's the path Prayer Scheduler uses
+        successfully for remote URLs and it works the same way for local
+        embedded files.
         """
         n = max(1, min(15, int(chime_number)))
         now = asyncio.get_event_loop().time()
@@ -432,12 +448,33 @@ class LitheClient:
             self.state.play_state, self.state.source_id,
         )
 
-        if n <= 9:
-            await self._send(0x02, MB_CHIME, f"play {n}")
-            self._last_chime_mbid = MB_CHIME
-        else:
-            await self._send(0x02, MB_BROWSE, f"PLAYITEM:DIRECT:/system/usr/song{n}.mp3")
+        # ── Mirror notify.lithe_tannoy._tannoy_start sequence ──
+        try:
+            # 1) Unmute if muted so audio path is open
+            if self.state.muted:
+                await self._send(0x02, MB_TRANSPORT, "UNMUTE")
+
+            # 2) Pause current source so it relinquishes the audio mixer.
+            #    This is THE critical step that's missing from the direct-
+            #    MB#80 path. Without it, Spotify Connect holds the audio
+            #    output and the chime command returns SUCCESS but produces
+            #    no audible output.
+            if self.state.play_state == "playing":
+                await self._send(0x02, MB_TRANSPORT, "PAUSE")
+
+            # 3) Brief settle for audio routing to switch over
+            await asyncio.sleep(0.15)
+
+            # 4) Fire the chime via PLAYITEM:DIRECT (vendor Method B).
+            #    This forces source → 17 (Direct URL) and plays the file
+            #    through the now-available audio path.
+            await self._send(
+                0x02, MB_BROWSE,
+                f"PLAYITEM:DIRECT:/system/usr/song{n}.mp3",
+            )
             self._last_chime_mbid = MB_BROWSE
+        except Exception as e:
+            _LOGGER.warning("Chime sequence failed: %s", e)
 
         self._last_chime_time = now
 

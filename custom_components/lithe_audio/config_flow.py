@@ -26,6 +26,7 @@ from .const import (
     DEFAULT_PORT, DOMAIN, LS10_PRODUCTS, LS9_PRODUCTS,
     PRODUCT_IO1, PRODUCT_MICRO, PRODUCT_NAMES,
     PRODUCT_PRO, PRODUCT_PRO2, PRODUCT_V2, PRODUCT_V3,
+    ADHAN_PRESETS, QURAN_JUZ, quran_juz_label, all_preset_options,
 )
 from .discovery import DiscoveredDevice, async_discover
 
@@ -280,3 +281,182 @@ class LitheAudioConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 "name": self._discovery_name,
             },
         )
+
+    # ── Options flow entry point ───────────────────────────────────────
+    @staticmethod
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> "LitheAudioOptionsFlow":
+        """Return the options flow handler — provides Prayer Scheduler UI."""
+        return LitheAudioOptionsFlow(config_entry)
+
+
+# ── Constants used by the Options Flow (Prayer Scheduler UI) ────────────
+PRAYER_NAMES_LIST = ["fajr", "dhuhr", "asr", "maghrib", "isha"]
+DAYS_OPTIONS = ["daily", "weekdays", "weekends", "friday", "saturday", "sunday"]
+CALC_METHODS = {
+    1:  "University of Islamic Sciences, Karachi",
+    2:  "Islamic Society of North America (ISNA)",
+    3:  "Muslim World League",
+    4:  "Umm Al-Qura University, Makkah",
+    5:  "Egyptian General Authority of Survey",
+    8:  "Gulf Region",
+    12: "Union des Organisations Islamiques de France",
+    13: "Diyanet İşleri Başkanlığı, Turkey",
+    15: "Moonsighting Committee Worldwide (Moonsighting.com)",
+}
+
+# Defaults if user has not yet configured anything
+_DEFAULT_ADHAN_URL = "https://www.islamcan.com/audio/adhan/azan1.mp3"
+_DEFAULT_VOLUME = 70
+
+
+class LitheAudioOptionsFlow(config_entries.OptionsFlow):
+    """Per-speaker options flow.
+
+    Provides a built-in Prayer Scheduler UI similar to the standalone
+    Adhan/Prayer scheduler webapp — configure city/country/method, then
+    per-prayer URL/volume/days, all within the standard HA integration
+    Configure dialog.
+    """
+
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+        self.config_entry = config_entry
+        self._draft: dict[str, Any] = dict(config_entry.options or {})
+
+    # ── Step 1: top-level menu ─────────────────────────────────────────
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        return self.async_show_menu(
+            step_id="init",
+            menu_options={
+                "prayer_general":  "Prayer Scheduler — General settings",
+                "prayer_entries":  "Prayer Scheduler — Per-prayer URLs & volumes",
+                "prayer_disable":  "Disable Prayer Scheduler",
+            },
+        )
+
+    # ── Step 2: General (city/country/method/volume/enable) ────────────
+    async def async_step_prayer_general(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        opts = self._draft.get("prayer", {})
+        presets = all_preset_options()
+        preset_choices = {"Custom URL (use field below)": ""} | presets
+
+        if user_input is not None:
+            chosen_preset = user_input.get("preset", "")
+            # If user picked a real preset, use its URL — otherwise free text
+            url = chosen_preset.strip() or user_input["default_url"].strip()
+            self._draft["prayer"] = {
+                **opts,
+                "enabled":  True,
+                "city":     user_input["city"].strip(),
+                "country":  user_input["country"].strip(),
+                "method":   int(user_input["method"]),
+                "default_volume": int(user_input["default_volume"]),
+                "default_url":    url,
+            }
+            return await self.async_step_prayer_entries()
+
+        # Reverse-lookup current default_url against presets to set initial value
+        current_url = opts.get("default_url", _DEFAULT_ADHAN_URL)
+        matching_label = ""
+        for label, url in presets.items():
+            if url == current_url:
+                matching_label = url
+                break
+
+        schema = vol.Schema({
+            vol.Required("city",    default=opts.get("city", "London")): str,
+            vol.Required("country", default=opts.get("country", "GB")): str,
+            vol.Required("method",  default=opts.get("method", 2)): vol.In(CALC_METHODS),
+            vol.Required("default_volume", default=opts.get("default_volume", _DEFAULT_VOLUME)):
+                vol.All(int, vol.Range(min=0, max=100)),
+            vol.Optional("preset", default=matching_label): vol.In({v: k for k, v in preset_choices.items()}),
+            vol.Required("default_url", default=current_url): str,
+        })
+        return self.async_show_form(step_id="prayer_general", data_schema=schema)
+
+    # ── Step 3: Per-prayer entries ─────────────────────────────────────
+    async def async_step_prayer_entries(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        opts = self._draft.get("prayer", {})
+        entries = opts.get("entries", {})
+        presets = all_preset_options()
+        # The dropdown value IS the URL (or "" for Custom). Labels are the
+        # friendly names.
+        preset_value_to_label = {"": "Custom (use URL field)"}
+        for label, url in presets.items():
+            preset_value_to_label[url] = label
+
+        if user_input is not None:
+            new_entries: dict[str, dict[str, Any]] = {}
+            default_url = opts.get("default_url", _DEFAULT_ADHAN_URL)
+            for prayer in PRAYER_NAMES_LIST:
+                enabled = user_input.get(f"{prayer}_enabled", False)
+                if not enabled:
+                    continue
+                # If preset chosen for this prayer, use its URL; else free text
+                preset_url = user_input.get(f"{prayer}_preset", "")
+                url = preset_url.strip() or user_input.get(
+                    f"{prayer}_url", default_url
+                ).strip()
+                new_entries[prayer] = {
+                    "url":    url,
+                    "volume": int(user_input.get(f"{prayer}_volume",
+                                                 opts.get("default_volume", _DEFAULT_VOLUME))),
+                    "days":   user_input.get(f"{prayer}_days", "daily"),
+                }
+            self._draft["prayer"] = {**opts, "entries": new_entries}
+            return self.async_create_entry(title="", data=self._draft)
+
+        # Build schema: one block per prayer
+        schema_dict: dict[Any, Any] = {}
+        for prayer in PRAYER_NAMES_LIST:
+            existing = entries.get(prayer, {})
+            current_url = existing.get("url", opts.get("default_url", _DEFAULT_ADHAN_URL))
+
+            # Pre-select preset if current URL matches one
+            matching_preset_value = ""
+            for url in presets.values():
+                if url == current_url:
+                    matching_preset_value = url
+                    break
+
+            schema_dict[vol.Optional(
+                f"{prayer}_enabled",
+                default=bool(existing),
+            )] = bool
+            schema_dict[vol.Optional(
+                f"{prayer}_preset",
+                default=matching_preset_value,
+            )] = vol.In(preset_value_to_label)
+            schema_dict[vol.Optional(
+                f"{prayer}_url",
+                default=current_url,
+            )] = str
+            schema_dict[vol.Optional(
+                f"{prayer}_volume",
+                default=existing.get("volume", opts.get("default_volume", _DEFAULT_VOLUME)),
+            )] = vol.All(int, vol.Range(min=0, max=100))
+            schema_dict[vol.Optional(
+                f"{prayer}_days",
+                default=existing.get("days", "daily"),
+            )] = vol.In(DAYS_OPTIONS)
+
+        return self.async_show_form(
+            step_id="prayer_entries",
+            data_schema=vol.Schema(schema_dict),
+        )
+
+    # ── Step 4: Disable prayer scheduler ───────────────────────────────
+    async def async_step_prayer_disable(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        opts = self._draft.get("prayer", {})
+        opts["enabled"] = False
+        self._draft["prayer"] = opts
+        return self.async_create_entry(title="", data=self._draft)

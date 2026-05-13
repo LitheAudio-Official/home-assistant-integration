@@ -86,6 +86,74 @@ save_favourite:
           max: 40
           mode: box
 
+play_quran_juz:
+  name: Play Quran (Juz)
+  description: >-
+    Stream a specific Juz (1-30) of the Quran to a Lithe Audio speaker.
+    Uses the embedded tannoy flow — pauses current playback, raises
+    volume, plays the Juz audio URL through MB#41 PLAYITEM:DIRECT.
+  target:
+    entity:
+      domain: media_player
+      integration: lithe_audio
+  fields:
+    juz:
+      name: Juz
+      description: Which Juz to play (1-30).
+      required: true
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 30
+          mode: box
+    volume:
+      name: Volume
+      description: Playback volume for this announcement (0-100).
+      required: false
+      default: 70
+      selector:
+        number:
+          min: 0
+          max: 100
+          mode: slider
+
+play_adhan:
+  name: Play Adhan (Call to Prayer)
+  description: >-
+    Play one of the preset Adhan audio recordings on a Lithe Audio
+    speaker. Uses the tannoy flow (pauses current source, raises volume,
+    plays via Direct URL).
+  target:
+    entity:
+      domain: media_player
+      integration: lithe_audio
+  fields:
+    preset:
+      name: Adhan Preset
+      description: Which Adhan recording to play.
+      required: true
+      default: "Azan 1 — Standard"
+      selector:
+        select:
+          options:
+            - "Azan 1 — Standard"
+            - "Azan 2 — Makkah"
+            - "Azan 3 — Madinah"
+            - "Azan 4 — Egyptian"
+            - "Azan 5 — Turkish"
+            - "Fajr Azan"
+    volume:
+      name: Volume
+      description: Playback volume (0-100).
+      required: false
+      default: 70
+      selector:
+        number:
+          min: 0
+          max: 100
+          mode: slider
+
 set_name:
   name: Set Device Name
   description: Set the speaker's friendly name (visible in the Lithe app and AirPlay).

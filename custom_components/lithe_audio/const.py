@@ -331,3 +331,63 @@ ALADHAN_URL = "https://api.aladhan.com/v1/timingsByCity"
 PRAYER_NAMES = [
     "fajr", "sunrise", "dhuhr", "asr", "sunset", "maghrib", "isha", "midnight",
 ]
+
+# Common Adhan (call-to-prayer) audio URLs — chosen to match the popular
+# pre-set picker in the standalone Prayer Scheduler webapp.
+ADHAN_PRESETS: dict[str, str] = {
+    "Azan 1 — Standard":      "https://www.islamcan.com/audio/adhan/azan1.mp3",
+    "Azan 2 — Makkah":        "https://www.islamcan.com/audio/adhan/azan2.mp3",
+    "Azan 3 — Madinah":       "https://www.islamcan.com/audio/adhan/azan3.mp3",
+    "Azan 4 — Egyptian":      "https://www.islamcan.com/audio/adhan/azan4.mp3",
+    "Azan 5 — Turkish":       "https://www.islamcan.com/audio/adhan/azan5.mp3",
+    "Fajr Azan":              "https://www.islamcan.com/audio/adhan/azan6.mp3",
+}
+
+# Quran — all 30 Juz, source: user-provided j.mp short links
+# (these resolve to publicly hosted MP3 recitations).
+QURAN_JUZ: dict[int, str] = {
+    1:  "http://j.mp/2b8SiNO",
+    2:  "http://j.mp/2b8RJmQ",
+    3:  "http://j.mp/2bFSrtF",
+    4:  "http://j.mp/2b8SXi3",
+    5:  "http://j.mp/2b8RZm3",
+    6:  "http://j.mp/28MBohs",
+    7:  "http://j.mp/2bFRIZC",
+    8:  "http://j.mp/2bufF7o",
+    9:  "http://j.mp/2byr1bu",
+    10: "http://j.mp/2bHfyUH",
+    11: "http://j.mp/2bHf80y",
+    12: "http://j.mp/2bWnTby",
+    13: "http://j.mp/2bFTiKQ",
+    14: "http://j.mp/2b8SUTA",
+    15: "http://j.mp/2bFRQIM",
+    16: "http://j.mp/2b8SegG",
+    17: "http://j.mp/2brHsFz",
+    18: "http://j.mp/2b8SCfc",
+    19: "http://j.mp/2bFSq95",
+    20: "http://j.mp/2brI1zc",
+    21: "http://j.mp/2b8VcBO",
+    22: "http://j.mp/2bFRxNP",
+    23: "http://j.mp/2brItxm",
+    24: "http://j.mp/2brHKw5",
+    25: "http://j.mp/2brImlf",
+    26: "http://j.mp/2bFRHF2",
+    27: "http://j.mp/2bFRXno",
+    28: "http://j.mp/2brI3ai",
+    29: "http://j.mp/2bFRyBF",
+    30: "http://j.mp/2bFREcc",
+}
+
+
+def quran_juz_label(juz: int) -> str:
+    """Display label for a Juz preset in dropdowns."""
+    return f"Juz {juz} — Quran"
+
+
+# Combined dropdown for the Options Flow: Adhan presets + 30 Quran Juz + Custom
+def all_preset_options() -> dict[str, str]:
+    """Return {label: url} mapping for the preset dropdown."""
+    opts: dict[str, str] = dict(ADHAN_PRESETS)
+    for juz, url in QURAN_JUZ.items():
+        opts[quran_juz_label(juz)] = url
+    return opts
