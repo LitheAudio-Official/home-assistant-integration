@@ -13,11 +13,12 @@ from typing import Callable, Optional
 from .const import (
     DEFAULT_PORT, MB_AUDIOCUE, MB_BLUETOOTH, MB_BROWSE, MB_BT_STATUS, MB_CHIME,
     MB_DEVICE_INFO, MB_DEVICE_NAME, MB_DSP, MB_FACTORY_RESET, MB_FAVOURITES,
-    MB_FIRMWARE, MB_MUTE, MB_NETWORK_INFO, MB_NOW_PLAYING, MB_PLAY_STATE,
-    MB_PLAYBACK_AUTH, MB_POSITION, MB_REBOOT_REQ, MB_REGISTER, MB_SOURCE,
-    MB_TIMEZONE, MB_TRANSPORT, MB_VOLUME, MUTE_OFF, MUTE_ON, PLAY_STATES,
-    SOURCES, TRANSPORT_NEXT, TRANSPORT_PAUSE, TRANSPORT_PLAY, TRANSPORT_PREV,
-    TRANSPORT_RESUME, TRANSPORT_STOP,
+    MB_FIRMWARE, MB_INTERFACE_IP, MB_MUTE, MB_NETWORK_INFO, MB_NETWORK_STATUS,
+    MB_NOW_PLAYING, MB_PLAY_STATE, MB_PLAYBACK_AUTH, MB_POSITION, MB_REBOOT_REQ,
+    MB_REGISTER, MB_RSSI, MB_SOURCE, MB_TIMEZONE, MB_TRANSPORT, MB_VOLUME,
+    MUTE_OFF, MUTE_ON, NETWORK_STATUS, PLAY_STATES, SOURCES, TRANSPORT_NEXT,
+    TRANSPORT_PAUSE, TRANSPORT_PLAY, TRANSPORT_PREV, TRANSPORT_RESUME,
+    TRANSPORT_STOP,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -34,6 +35,14 @@ class SpeakerState:
     timezone: str = ""
     cast_version: str = ""
     net_mode: str = ""
+
+    # Network — populated from MB#123, MB#124, MB#151, MB#208(READ_ssid)
+    ip_address: str = ""        # IP from MB#123 (Wlan or Eth interface)
+    network_interface: str = "" # "Wlan" / "Eth"
+    network_status: str = ""    # "WLAN" / "Ethernet" / "P2P" / "WAC/SAC/LS-Connect"
+    wifi_rssi_dbm: int = 0      # RSSI in dBm (negative number, e.g. -55)
+    ssid: str = ""              # Connected SSID (from NV item)
+    speaker_status: str = ""    # "Standby" / "Connected" / "Active" etc
 
     # Playback
     play_state: str = "stopped"
@@ -99,6 +108,10 @@ class LitheClient:
         # Track every RemoteID seen on the socket for diagnostic purposes
         # (multiple RemoteIDs can come from one speaker depending on source)
         self._seen_remote_ids: set[int] = set()
+        # NV item being read via MB#208 READ_<item> — cleared on response
+        self._pending_nv_read: str | None = None
+        # Counter of consecutive resync events — triggers reconnect at 10
+        self._resync_count: int = 0
 
     # ── Connection ─────────────────────────────────────────────────────────
 
@@ -234,16 +247,86 @@ class LitheClient:
     # ── State refresh ──────────────────────────────────────────────────────
 
     async def async_refresh(self) -> None:
-        """Request all state from speaker."""
-        for mb in (MB_DEVICE_NAME, MB_FIRMWARE, MB_DEVICE_INFO, MB_NETWORK_INFO,
-                   MB_VOLUME, MB_MUTE, MB_SOURCE, MB_PLAY_STATE,
-                   MB_NOW_PLAYING, MB_POSITION, MB_TIMEZONE, MB_BT_STATUS):
+        """Request all state from speaker.
+
+        IMPORTANT spec compliance (LUCI Tech Note v15.0.7):
+
+        Per spec §6.1.1, each message box has a direction prefix:
+          - Rx_  = HOST→LSx only (we send, speaker doesn't respond)
+          - Tx_  = LSx→HOST only (PUSH ONLY — we cannot GET these)
+          - RxTx_ = bidirectional (we can GET, speaker responds)
+
+        We MUST NOT send GET on Tx_-only message boxes. The speaker
+        doesn't know how to respond and may emit garbled bytes that
+        misalign our parser.
+
+        Tx_-only MBs (push from speaker on state change):
+          MB#42 (UI Info / Now Playing) — use MB#41 GETUI:PLAY instead
+          MB#49 (Position) — speaker pushes continuously while playing
+          MB#50 (Source) — speaker pushes on change
+          MB#51 (Play State) — speaker pushes on change
+          MB#63 (Mute) — speaker pushes on change
+          MB#210 (BT Status) — speaker pushes on BT events
+
+        We do NOT include those in this refresh. The speaker will
+        proactively push them as state changes occur.
+        """
+        # RxTx_ message boxes — safe to GET, speaker responds
+        for mb in (MB_DEVICE_NAME,      # 90  RxTx_ Device Name — GET
+                   MB_FIRMWARE,         # 5   RxTx_ Firmware Version — GET
+                   MB_INTERFACE_IP,     # 123 RxTx_ Interface IP Address — GET
+                   MB_NETWORK_STATUS,   # 124 RxTx_ Network Status — GET
+                   MB_RSSI,             # 151 RxTx_ RSSI — GET
+                   MB_VOLUME,           # 64  RxTx_ Volume Control — GET
+                   MB_TIMEZONE):        # 573 RxTx_ TimeZone — GET
             await self._send(0x01, mb, "")
             await asyncio.sleep(0.05)
-        # Favourites — try both known command variants in case firmware differs
-        await self._send(0x02, MB_FAVOURITES, "FAV_LIST")
+
+        # MB#91 NETWORK INFO — per LUCI spec §9.35, this is SET (not GET)
+        # with a data-driven query: MACADDR (returns both MACs in 2 packets),
+        # IPADDR (returns IP), MACADDR:wlan0 (specific), etc. We use MACADDR
+        # to retrieve both wlan0 and eth0 MAC addresses.
+        await self._send(0x02, MB_NETWORK_INFO, "MACADDR")
         await asyncio.sleep(0.05)
-        await self._send(0x01, MB_FAVOURITES, "")
+
+        # MB#42 Now Playing — use MB#41 GETUI:PLAY (the spec-compliant way)
+        # MB#41 is Rx_ (we send), and the speaker responds by pushing MB#42
+        await self._send(0x02, MB_BROWSE, "GETUI:PLAY")
+        await asyncio.sleep(0.05)
+
+        # MB#70 Favourites — spec §9.31: SET FAV_LIST is the correct query.
+        # There is no GET form per spec body. The response arrives on MB#70
+        # SET with FAV_LIST JSON.
+        await self._send(0x02, MB_FAVOURITES, "FAV_LIST")
+
+        # NV read for SSID via MB#208 RxTx_ NV Read/Write
+        await asyncio.sleep(0.05)
+        await self.async_read_nv("ssid")
+
+    async def async_read_nv(self, item: str) -> None:
+        """Read an NV item via MB#208 SET READ_<item>.
+
+        Per LUCI spec §10.23, the speaker responds on the same MB#208 with
+        the NV item's value as the payload.
+        """
+        self._pending_nv_read = item
+        await self._send(0x02, MB_DEVICE_INFO, f"READ_{item}")
+
+    async def async_get_play_view(self) -> None:
+        """Request the current Play View via MB#41 GETUI:PLAY.
+
+        Per spec §9.15, the response arrives in MB#42 with the play view
+        JSON (track info, artwork, transport state).
+        """
+        await self._send(0x02, MB_BROWSE, "GETUI:PLAY")
+
+    async def async_get_home_view(self) -> None:
+        """Request the Browse Home View via MB#41 GETUI:HOME.
+
+        Per spec §9.15, the response arrives in MB#42 with the home view
+        JSON listing available browseable sources (USB, Airable, DMR, etc).
+        """
+        await self._send(0x02, MB_BROWSE, "GETUI:HOME")
 
     async def async_request_favourites(self) -> None:
         await self._send(0x02, MB_FAVOURITES, "FAV_LIST")
@@ -254,7 +337,9 @@ class LitheClient:
         await self._send(0x02, MB_VOLUME, str(max(0, min(100, level))))
 
     async def async_mute(self, mute: bool) -> None:
-        await self._send(0x02, MB_MUTE, MUTE_ON if mute else MUTE_OFF)
+        # Per LUCI spec §9.14 — mute/unmute is sent via MB#40 Play Control.
+        # MB#63 is Tx_ only (speaker reports current mute state via push).
+        await self._send(0x02, MB_TRANSPORT, "MUTE" if mute else "UNMUTE")
 
     async def async_play(self) -> None:
         await self._send(0x02, MB_TRANSPORT, TRANSPORT_PLAY)
@@ -340,8 +425,21 @@ class LitheClient:
         await self._send(0x02, MB_BLUETOOTH, command)
 
     async def async_reboot(self) -> None:
-        """Reboot via MB#114 (Reboot Request)."""
-        await self._send(0x02, MB_REBOOT_REQ, "")
+        """Request speaker reboot.
+
+        Per LUCI spec §9.42–9.43, MB#114 and MB#115 form a request/grant
+        pair where LSx asks the HOST to reboot it (during OTA). There is
+        NO documented host-initiated "reboot now" command in the LUCI
+        protocol.
+
+        Sending MB#114 from us is a protocol violation that the speaker
+        ignores. The only reliable way to reboot is via the Lithe app
+        or HTTP Cast endpoint, neither of which is exposed via LUCI.
+        """
+        _LOGGER.warning(
+            "Reboot via LUCI is not supported by the speaker firmware. "
+            "Use the Lithe Audio app or power-cycle the speaker manually."
+        )
 
     async def async_factory_reset(self) -> None:
         """Factory reset via MB#150."""
@@ -444,8 +542,10 @@ class LitheClient:
             if len(self._buf) < total:
                 break  # need more bytes
 
-            # Sanity-check: byte after this packet should be a known start
-            # of next packet (0x00 NUL terminator, or 0xAA RID start).
+            # Sanity-check: byte after this packet should be the high byte of
+            # the next packet's RemoteID. Speakers use either 0x0000 (so high
+            # byte 0x00) or 0xAAAA (high byte 0xAA). Anything else means we
+            # mis-parsed the current packet's DataLen — resync.
             need_sanity = total < len(self._buf)
             if need_sanity:
                 next_byte = self._buf[total]
@@ -464,6 +564,18 @@ class LitheClient:
             except struct.error:
                 remote_id = 0
             mbid = struct.unpack_from(">H", self._buf, 3)[0]
+
+            # Sanity: MBID must be in the valid LUCI range. Per spec the
+            # highest documented MB is around 600 (timezone is 573, cast
+            # setup is 494). Anything beyond ~700 is parser garbage.
+            if mbid > 700:
+                _LOGGER.warning(
+                    "Implausible MBID=%d (>700) — resyncing parser",
+                    mbid,
+                )
+                self._resync_buffer()
+                continue
+
             status = self._buf[5]
             payload_bytes = self._buf[10:10 + data_len]
             try:
@@ -471,11 +583,13 @@ class LitheClient:
             except Exception:
                 payload = ""
 
-            # Consume this packet
+            # Consume this packet — do NOT skip trailing NUL.
+            # The speaker's packet stream is back-to-back; any byte after
+            # `total` is part of the next packet's RID. Skipping bytes here
+            # offsets the parser forever.
             self._buf = self._buf[total:]
-            # If followed by NUL terminator, skip it too
-            if self._buf and self._buf[0] == 0x00:
-                self._buf = self._buf[1:]
+            # Reset resync counter — we successfully parsed a packet
+            self._resync_count = 0
 
             self._last_rx_time = asyncio.get_event_loop().time()
 
@@ -506,20 +620,37 @@ class LitheClient:
     def _resync_buffer(self) -> None:
         """Scan forward in self._buf for the next plausible packet header.
 
-        Plausible header starts with RemoteID = 0xAAAA (sent by speaker
-        in most cases) or 0x0000 (also seen). We look for either pattern
-        and discard bytes before it.
+        Repeated misalignments indicate persistent corruption — likely
+        from the speaker sending data we can't interpret. We track how
+        often this happens; if it exceeds threshold, the parser
+        disconnects and forces a reconnect.
         """
-        # Find the next 0xAA 0xAA or skip past any NUL trailers
+        self._resync_count += 1
+        if self._resync_count > 10:
+            _LOGGER.warning(
+                "%d resyncs in a row — disconnecting to force clean reconnect",
+                self._resync_count,
+            )
+            self._resync_count = 0
+            self._buf = b""
+            # Trigger reconnect by closing the writer
+            if self._writer and not self._writer.is_closing():
+                try:
+                    self._writer.close()
+                except Exception:
+                    pass
+            return
+
+        # Plausible header starts with RemoteID = 0xAAAA or 0x0000.
+        # We look for either pattern and discard bytes before it.
         i = 1
         while i < len(self._buf) - 1:
             b0 = self._buf[i]
             b1 = self._buf[i+1]
             if (b0 == 0xAA and b1 == 0xAA) or (b0 == 0x00 and b1 == 0x00):
-                # Found plausible start of next packet
                 discarded = i
                 self._buf = self._buf[i:]
-                _LOGGER.warning(
+                _LOGGER.debug(
                     "Resynced — discarded %d bytes to next packet header",
                     discarded,
                 )
@@ -617,9 +748,6 @@ class LitheClient:
         elif mbid == MB_NOW_PLAYING:
             self._parse_now_playing(payload)
 
-        elif mbid == MB_DEVICE_INFO:
-            self._parse_device_info(payload)
-
         elif mbid == MB_NETWORK_INFO:
             # MB#91 has the format: <Interface>:<MAC>
             # E.g. "Eth0:CC:90:93:35:03:BA" or "Wlan0:CC:90:93:10:2E:8C"
@@ -704,6 +832,64 @@ class LitheClient:
 
         elif mbid == MB_TIMEZONE:
             self.state.timezone = payload.strip()
+
+        elif mbid == MB_INTERFACE_IP:
+            # MB#123 — "Wlan:192.168.1.101" or "Eth:192.168.1.100"
+            p = payload.strip()
+            if ":" in p:
+                iface, _, ip = p.partition(":")
+                iface = iface.strip()
+                ip = ip.strip()
+                # Prefer Wlan over Eth when both come through
+                if iface.lower().startswith("wlan") or not self.state.ip_address:
+                    self.state.ip_address = ip
+                    self.state.network_interface = iface
+
+        elif mbid == MB_NETWORK_STATUS:
+            # MB#124 — "<active>#WLAN,status#ETH,status#P2P,status#CONF,status"
+            # active: 1=WLAN, 2=ETH, 3=P2P, 4=WAC/SAC/LS-Connect
+            p = payload.strip()
+            if p:
+                active = p.split("#", 1)[0].strip()
+                self.state.network_status = NETWORK_STATUS.get(active, "Unknown")
+                # Set speaker_status based on whether any interface is active
+                if active in NETWORK_STATUS:
+                    self.state.speaker_status = "Connected"
+                else:
+                    self.state.speaker_status = "Standby"
+
+        elif mbid == MB_RSSI:
+            # MB#151 — payload is RSSI in dBm as a string (e.g. "-55" or "-55,-60" for dual antenna)
+            p = payload.strip()
+            if "," in p:
+                # Multiple antennas — take the strongest (least negative)
+                try:
+                    vals = [int(v.strip()) for v in p.split(",") if v.strip()]
+                    if vals:
+                        self.state.wifi_rssi_dbm = max(vals)
+                except ValueError:
+                    pass
+            else:
+                try:
+                    self.state.wifi_rssi_dbm = int(p)
+                except ValueError:
+                    pass
+
+        elif mbid == MB_DEVICE_INFO:
+            # MB#208 is dual-purpose: device info JSON OR NV-read response.
+            # If the payload starts with a recognisable NV-read marker we treat
+            # it specially. Otherwise fall through to the existing device-info
+            # parser.
+            p = payload.strip()
+            if p and not p.startswith("{") and self._pending_nv_read:
+                # We requested NV READ_<item> — this is the value
+                nv_item = self._pending_nv_read
+                self._pending_nv_read = None
+                if nv_item.lower() == "ssid":
+                    self.state.ssid = p
+                _LOGGER.debug("NV read %r = %r", nv_item, p)
+            else:
+                self._parse_device_info(payload)
 
         else:
             changed = False
