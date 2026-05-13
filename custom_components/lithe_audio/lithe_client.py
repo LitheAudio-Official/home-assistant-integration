@@ -291,7 +291,7 @@ class LitheClient:
         else:
             mbid = MB_BROWSE
             payload = f"PLAYITEM:DIRECT:/system/usr/song{n}.mp3".encode("utf-8")
-        pkt = struct.pack("<HBHBHH", 0xAAAA, 0x02, mbid, 0, 0x0000, len(payload)) + payload + b"\x00"
+        pkt = struct.pack("<HBHBHH", 0xAAAA, 0x02, mbid, 0, 0x0000, len(payload)) + payload
 
         w = self._writer
         now = asyncio.get_event_loop().time()
@@ -360,10 +360,10 @@ class LitheClient:
             0x02,
             byte_val,
         ])
-        # DataLen counts payload bytes only — NUL terminator is separate
+        # DataLen counts payload bytes only
         data_len = len(sub)
         header = struct.pack("<HBHBHH", 0xAAAA, 0x02, MB_DSP, 0, 0x0000, data_len)
-        pkt = header + sub + b"\x00"
+        pkt = header + sub  # no trailing NUL — matches Control4 reference driver
         if self._writer and not self._writer.is_closing():
             _LOGGER.debug("TX DSP MB#112: sub=0x%02x(%d) val=%d", sub_mb, sub_mb, value)
             self._writer.write(pkt)
@@ -446,6 +446,14 @@ class LitheClient:
                 remote_id = 0
 
             mbid = struct.unpack_from(">H", self._buf, 3)[0]
+            # Status byte at offset 5: per LUCI spec §4.1.1,
+            #   0 = invalid/ignore (and for commands: NA)
+            #   1 = Success
+            #   2 = Generic error
+            #   3 = Device not ready for specific command
+            #   4 = CRC error
+            # For Response packets this byte carries success/failure.
+            status = self._buf[5]
             payload_bytes = self._buf[10:10 + data_len]
             try:
                 payload = payload_bytes.decode("utf-8", "replace").rstrip("\x00")
@@ -463,12 +471,21 @@ class LitheClient:
                     remote_id, mbid, payload[:80],
                 )
 
-            # Also log every packet's RemoteID at debug level so we can
-            # correlate state corruption with peer pushes
+            # Also log every packet's RemoteID + Status at debug level
             _LOGGER.debug(
-                "RX MB#%d (rid=0x%04x, %d bytes): %s",
-                mbid, remote_id, data_len, payload[:200],
+                "RX MB#%d (rid=0x%04x, status=%d, %d bytes): %s",
+                mbid, remote_id, status, data_len, payload[:200],
             )
+
+            # Status != 0/1 indicates a real failure code from the spec
+            if status not in (0, 1):
+                _LOGGER.warning(
+                    "RX MB#%d returned status=%d (%s). RID=0x%04x payload=%r",
+                    mbid, status,
+                    {2: "Generic error", 3: "Device not ready",
+                     4: "CRC error"}.get(status, f"unknown ({status})"),
+                    remote_id, payload[:80],
+                )
 
             self._handle_push(mbid, payload)
 
@@ -875,22 +892,30 @@ class LitheClient:
 
     @staticmethod
     def _build_packet(cmd_type: int, mbid: int, payload: str) -> bytes:
-        """Build a TX packet matching the LUCI spec exactly:
+        """Build a TX packet matching the LUCI spec.
 
         Header (10 bytes):
-            RemoteID  : 2 bytes, LE — always 0xAAAA
+            RemoteID  : 2 bytes, LE — 0xAAAA
             CmdType   : 1 byte      — 0x01 GET, 0x02 SET
             MBID      : 2 bytes, LE
-            Status    : 1 byte      — 0x00
-            CRC       : 2 bytes, LE — 0x0000 (CRC disabled — speaker doesn't validate)
-            DataLen   : 2 bytes, LE — length of payload EXCLUDING the trailing NUL
+            Status    : 1 byte      — 0x00 (NA for commands)
+            CRC       : 2 bytes, LE — 0x0000 (LS10 has CRC disabled in firmware)
+            DataLen   : 2 bytes, LE — length of payload
         Body:
-            Payload (UTF-8) + 0x00 NUL terminator (terminator is OUTSIDE DataLen)
+            Payload (UTF-8) — NO trailing NUL terminator
+
+        CRITICAL: do NOT append a NUL byte. The spec text mentions NUL
+        termination but the reference Lithe / Libre integrations
+        (Control4 driver, Lithe app) send the payload bytes only and
+        rely on DataLen to delimit. Appending an extra NUL puts a stray
+        byte in the speaker's TCP buffer that misaligns the parser for
+        subsequent packets — causing slow / random responses on
+        time-sensitive commands like chime triggers.
         """
         data = payload.encode("utf-8")
         data_len = len(data)
         header = struct.pack("<HBHBHH", 0xAAAA, cmd_type, mbid, 0, 0x0000, data_len)
-        return header + data + b"\x00"
+        return header + data
 
     async def _send(self, cmd_type: int, mbid: int, payload: str) -> None:
         if self._writer and not self._writer.is_closing():
