@@ -125,6 +125,12 @@ class PrayerScheduler:
             times = await async_fetch_prayer_times(self.hass, city, country, method)
             _LOGGER.info("Prayer times for %s/%s: %s", city, country, times)
 
+        # Stash today's times so the Options Flow "View schedule" can display them
+        prayer_data = self.hass.data.setdefault(DOMAIN, {}).setdefault("prayer", {})
+        prayer_data["times"] = times
+        prayer_data["last_fetch_city"] = city
+        prayer_data["last_fetch_country"] = country
+
         dow = date.today().weekday()
 
         for entry in entries:

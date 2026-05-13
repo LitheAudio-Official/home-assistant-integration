@@ -292,7 +292,7 @@ class LitheAudioConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 # ── Constants used by the Options Flow (Prayer Scheduler UI) ────────────
-PRAYER_NAMES_LIST = ["fajr", "dhuhr", "asr", "maghrib", "isha"]
+PRAYER_NAMES_LIST = ["fajr", "sunrise", "dhuhr", "asr", "sunset", "maghrib", "isha"]
 DAYS_OPTIONS = ["daily", "weekdays", "weekends", "friday", "saturday", "sunday"]
 CALC_METHODS = {
     1:  "University of Islamic Sciences, Karachi",
@@ -326,6 +326,9 @@ class LitheAudioOptionsFlow(config_entries.OptionsFlow):
         # Store it under a private attribute instead.
         self._entry = config_entry
         self._draft: dict[str, Any] = dict(config_entry.options or {})
+        # Per-prayer wizard state
+        self._wizard_index: int = 0
+        self._wizard_entries: dict[str, dict[str, Any]] = {}
 
     # ── Step 1: top-level menu ─────────────────────────────────────────
     async def async_step_init(
@@ -334,9 +337,12 @@ class LitheAudioOptionsFlow(config_entries.OptionsFlow):
         return self.async_show_menu(
             step_id="init",
             menu_options={
-                "prayer_general":  "Prayer Scheduler — General settings",
-                "prayer_entries":  "Prayer Scheduler — Per-prayer URLs & volumes",
-                "prayer_disable":  "Disable Prayer Scheduler",
+                "prayer_general":   "📅  Prayer Schedule — Location & defaults",
+                "prayer_entries":   "🕋  Prayer Schedule — Per-prayer settings",
+                "prayer_test":      "▶️  Test play an Adhan / Quran URL",
+                "prayer_view":      "📋  View today's schedule",
+                "logging":          "🐞  Debug logging (for support)",
+                "prayer_disable":   "✖️  Disable Prayer Scheduler",
             },
         )
 
@@ -382,78 +388,265 @@ class LitheAudioOptionsFlow(config_entries.OptionsFlow):
         })
         return self.async_show_form(step_id="prayer_general", data_schema=schema)
 
-    # ── Step 3: Per-prayer entries ─────────────────────────────────────
+    # ── Step 3: Per-prayer entries (wizard, one step per prayer) ───────
     async def async_step_prayer_entries(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
+        """Entry point — kick off the per-prayer wizard at the first prayer."""
+        self._wizard_index = 0
+        # Stash a working copy of entries to be mutated as we step through
         opts = self._draft.get("prayer", {})
-        entries = opts.get("entries", {})
+        self._wizard_entries = dict(opts.get("entries", {}) or {})
+        return await self._show_prayer_step(None)
+
+    async def async_step_prayer_one(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Render one prayer's form; advance to next on submit."""
+        return await self._show_prayer_step(user_input)
+
+    async def _show_prayer_step(
+        self, user_input: dict[str, Any] | None
+    ) -> FlowResult:
+        opts = self._draft.get("prayer", {})
         presets = all_preset_options()
-        # The dropdown value IS the URL (or "" for Custom). Labels are the
-        # friendly names.
         preset_value_to_label = {"": "Custom (use URL field)"}
         for label, url in presets.items():
             preset_value_to_label[url] = label
 
-        if user_input is not None:
-            new_entries: dict[str, dict[str, Any]] = {}
-            default_url = opts.get("default_url", _DEFAULT_ADHAN_URL)
-            for prayer in PRAYER_NAMES_LIST:
-                enabled = user_input.get(f"{prayer}_enabled", False)
-                if not enabled:
-                    continue
-                # If preset chosen for this prayer, use its URL; else free text
-                preset_url = user_input.get(f"{prayer}_preset", "")
-                url = preset_url.strip() or user_input.get(
-                    f"{prayer}_url", default_url
-                ).strip()
-                new_entries[prayer] = {
+        default_url    = opts.get("default_url", _DEFAULT_ADHAN_URL)
+        default_volume = opts.get("default_volume", _DEFAULT_VOLUME)
+
+        # Save submitted values from the previous prayer (if any)
+        if user_input is not None and self._wizard_index < len(PRAYER_NAMES_LIST):
+            prayer = PRAYER_NAMES_LIST[self._wizard_index]
+            enabled = user_input.get("enabled", False)
+            if enabled:
+                preset_url = (user_input.get("preset") or "").strip()
+                url = preset_url or user_input.get("url", default_url).strip()
+                self._wizard_entries[prayer] = {
                     "url":    url,
-                    "volume": int(user_input.get(f"{prayer}_volume",
-                                                 opts.get("default_volume", _DEFAULT_VOLUME))),
-                    "days":   user_input.get(f"{prayer}_days", "daily"),
+                    "volume": int(user_input.get("volume", default_volume)),
+                    "days":   user_input.get("days", "daily"),
                 }
-            self._draft["prayer"] = {**opts, "entries": new_entries}
+            else:
+                self._wizard_entries.pop(prayer, None)
+            self._wizard_index += 1
+
+        # Done? Save and return to menu
+        if self._wizard_index >= len(PRAYER_NAMES_LIST):
+            self._draft["prayer"] = {**opts, "entries": self._wizard_entries}
             return self.async_create_entry(title="", data=self._draft)
 
-        # Build schema: one block per prayer
-        schema_dict: dict[Any, Any] = {}
-        for prayer in PRAYER_NAMES_LIST:
-            existing = entries.get(prayer, {})
-            current_url = existing.get("url", opts.get("default_url", _DEFAULT_ADHAN_URL))
+        # Render the next prayer
+        prayer = PRAYER_NAMES_LIST[self._wizard_index]
+        existing = self._wizard_entries.get(prayer, {})
+        current_url = existing.get("url", default_url)
+        matching_preset_value = ""
+        for url in presets.values():
+            if url == current_url:
+                matching_preset_value = url
+                break
 
-            # Pre-select preset if current URL matches one
-            matching_preset_value = ""
-            for url in presets.values():
-                if url == current_url:
-                    matching_preset_value = url
-                    break
+        schema = vol.Schema({
+            vol.Optional("enabled", default=bool(existing)): bool,
+            vol.Optional("preset",  default=matching_preset_value):
+                vol.In(preset_value_to_label),
+            vol.Optional("url",     default=current_url): str,
+            vol.Required("volume",  default=existing.get("volume", default_volume)):
+                vol.All(int, vol.Range(min=0, max=100)),
+            vol.Required("days",    default=existing.get("days", "daily")):
+                vol.In(DAYS_OPTIONS),
+        })
 
-            schema_dict[vol.Optional(
-                f"{prayer}_enabled",
-                default=bool(existing),
-            )] = bool
-            schema_dict[vol.Optional(
-                f"{prayer}_preset",
-                default=matching_preset_value,
-            )] = vol.In(preset_value_to_label)
-            schema_dict[vol.Optional(
-                f"{prayer}_url",
-                default=current_url,
-            )] = str
-            schema_dict[vol.Optional(
-                f"{prayer}_volume",
-                default=existing.get("volume", opts.get("default_volume", _DEFAULT_VOLUME)),
-            )] = vol.All(int, vol.Range(min=0, max=100))
-            schema_dict[vol.Optional(
-                f"{prayer}_days",
-                default=existing.get("days", "daily"),
-            )] = vol.In(DAYS_OPTIONS)
-
+        # Pretty names for the step title placeholder
+        pretty = {
+            "fajr":    "Fajr (Pre-dawn)",
+            "sunrise": "Sunrise (Shuruq)",
+            "dhuhr":   "Dhuhr (Midday)",
+            "asr":     "Asr (Afternoon)",
+            "sunset":  "Sunset (Maghrib precursor)",
+            "maghrib": "Maghrib (Sunset prayer)",
+            "isha":    "Isha (Night)",
+        }
         return self.async_show_form(
-            step_id="prayer_entries",
-            data_schema=vol.Schema(schema_dict),
+            step_id="prayer_one",
+            data_schema=schema,
+            description_placeholders={
+                "prayer_name": pretty.get(prayer, prayer.capitalize()),
+                "step_num":    str(self._wizard_index + 1),
+                "step_total":  str(len(PRAYER_NAMES_LIST)),
+            },
         )
+
+    # ── Step 3b: Test play (immediately play a URL on THIS speaker) ─────
+    async def async_step_prayer_test(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Play a chosen URL on this speaker right now via the tannoy flow.
+
+        Lets the user verify their chosen Adhan / Quran URL actually plays
+        before scheduling it. Uses the same notify.lithe_tannoy path that
+        the scheduler uses at prayer time, so a working test means a
+        working schedule.
+        """
+        opts = self._draft.get("prayer", {})
+        presets = all_preset_options()
+        # Reverse map: friendly label → URL. Add "Custom" sentinel.
+        preset_label_to_url: dict[str, str] = {"Custom URL (use field below)": ""}
+        for label, url in presets.items():
+            preset_label_to_url[label] = url
+        # voluptuous needs {value: label} for the dropdown to display labels
+        preset_value_to_label = {v: k for k, v in preset_label_to_url.items()}
+
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            # Choose URL: preset wins if set, otherwise custom URL field
+            preset_url = (user_input.get("preset") or "").strip()
+            custom_url = (user_input.get("url") or "").strip()
+            url = preset_url or custom_url or opts.get("default_url", _DEFAULT_ADHAN_URL)
+            if not url:
+                errors["base"] = "missing_url"
+            else:
+                volume = int(user_input.get("volume",
+                                            opts.get("default_volume", _DEFAULT_VOLUME)))
+                host = self._entry.data.get("host")
+                # Fire-and-forget the tannoy notify with this speaker as target
+                try:
+                    self.hass.async_create_task(
+                        self.hass.services.async_call(
+                            "notify", "lithe_tannoy",
+                            {
+                                "message": url,
+                                "data": {
+                                    "mode":     "start",
+                                    "volume":   volume,
+                                    "speakers": [host],
+                                },
+                            },
+                            blocking=False,
+                        )
+                    )
+                    _LOGGER.info(
+                        "Prayer test: playing %s on %s at volume %d", url, host, volume,
+                    )
+                except Exception as e:
+                    _LOGGER.error("Prayer test failed: %s", e)
+                    errors["base"] = "test_failed"
+
+                if not errors:
+                    # Return to menu so the user can pick another action
+                    return await self.async_step_init()
+
+        # Default URL/preset based on what's saved
+        default_url = opts.get("default_url", _DEFAULT_ADHAN_URL)
+        matching_preset_value = ""
+        for url in presets.values():
+            if url == default_url:
+                matching_preset_value = url
+                break
+
+        schema = vol.Schema({
+            vol.Optional("preset", default=matching_preset_value):
+                vol.In(preset_value_to_label),
+            vol.Optional("url", default=default_url): str,
+            vol.Required("volume", default=opts.get("default_volume", _DEFAULT_VOLUME)):
+                vol.All(int, vol.Range(min=0, max=100)),
+        })
+        return self.async_show_form(
+            step_id="prayer_test",
+            data_schema=schema,
+            errors=errors,
+        )
+
+    # ── Step 3c: View today's schedule (read-only summary) ──────────────
+    async def async_step_prayer_view(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Show today's resolved prayer times + scheduled actions."""
+        if user_input is not None:
+            return await self.async_step_init()
+
+        # Pull current schedule state from the global prayer data store
+        prayer_state = self.hass.data.get(DOMAIN, {}).get("prayer", {}) or {}
+        times: dict[str, str] = prayer_state.get("times", {}) or {}
+        host = self._entry.data.get("host")
+
+        opts = self._draft.get("prayer", {})
+        entries = opts.get("entries", {}) or {}
+        city = opts.get("city", "—")
+        country = opts.get("country", "—")
+        method = opts.get("method", "—")
+        method_label = CALC_METHODS.get(int(method), str(method)) if isinstance(method, int) else str(method)
+        enabled = opts.get("enabled", False)
+
+        # Build a human-readable summary
+        lines = [
+            f"**Speaker:** {host}",
+            f"**Status:** {'✅ Enabled' if enabled else '⚪ Disabled'}",
+            f"**Location:** {city}, {country}",
+            f"**Calculation:** {method_label}",
+            "",
+            "**Today's prayer times:**",
+        ]
+        if times:
+            for p in PRAYER_NAMES_LIST:
+                t = times.get(p, "—")
+                e = entries.get(p, {})
+                marker = "✅" if e else "⚪"
+                if e:
+                    days = e.get("days", "daily")
+                    vol_v = e.get("volume", "?")
+                    lines.append(f"  {marker} **{p.capitalize()}** at {t} — vol {vol_v}, {days}")
+                else:
+                    lines.append(f"  {marker} {p.capitalize()} at {t} (not scheduled)")
+        else:
+            lines.append("  _Times not yet fetched — submit the General step first._")
+
+        description = "\n".join(lines)
+
+        schema = vol.Schema({
+            vol.Optional("acknowledge", default=True): bool,
+        })
+        return self.async_show_form(
+            step_id="prayer_view",
+            data_schema=schema,
+            description_placeholders={"summary": description},
+        )
+
+    # ── Step 3d: Toggle debug logging ──────────────────────────────────
+    async def async_step_logging(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Toggle debug logging for the lithe_audio integration.
+
+        Saves the chosen level to logger.async_set_level() so the user
+        doesn't have to edit configuration.yaml or restart HA.
+        """
+        if user_input is not None:
+            level = user_input.get("level", "info")
+            try:
+                # HA service: logger.set_level — sets per-logger level live
+                await self.hass.services.async_call(
+                    "logger", "set_level",
+                    {f"custom_components.lithe_audio": level},
+                    blocking=True,
+                )
+                _LOGGER.info("Lithe Audio log level set to %s", level)
+            except Exception as e:
+                _LOGGER.error("Failed to set log level: %s", e)
+            return await self.async_step_init()
+
+        schema = vol.Schema({
+            vol.Required("level", default="info"): vol.In({
+                "debug":    "Debug   — verbose (for chime/protocol issues)",
+                "info":     "Info    — normal (recommended)",
+                "warning":  "Warning — quiet",
+                "error":    "Error   — silent unless something breaks",
+            }),
+        })
+        return self.async_show_form(step_id="logging", data_schema=schema)
 
     # ── Step 4: Disable prayer scheduler ───────────────────────────────
     async def async_step_prayer_disable(
