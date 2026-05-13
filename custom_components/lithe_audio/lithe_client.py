@@ -10,8 +10,6 @@ import struct
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-import aiohttp
-
 from .const import (
     DEFAULT_PORT, MB_AUDIOCUE, MB_BLUETOOTH, MB_BROWSE, MB_BT_STATUS, MB_CHIME,
     MB_DEVICE_INFO, MB_DEVICE_NAME, MB_DSP, MB_FACTORY_RESET, MB_FAVOURITES,
@@ -251,58 +249,43 @@ class LitheClient:
     async def async_refresh(self) -> None:
         """Request all state from speaker.
 
-        IMPORTANT spec compliance (LUCI Tech Note v15.0.7):
+        NOTE: empirically this firmware responds to GETs on Tx_-only
+        mailboxes (MB#42 Now Playing, MB#50 Source, MB#51 Play State,
+        MB#49 Position, MB#63 Mute, MB#210 BT Status) even though the
+        spec marks them as push-only. We send them because they're the
+        only way to get the speaker's current state on connect or after
+        a stale period — the spec-only "push on change" never fires if
+        nothing changed.
 
-        Per spec §6.1.1, each message box has a direction prefix:
-          - Rx_  = HOST→LSx only (we send, speaker doesn't respond)
-          - Tx_  = LSx→HOST only (PUSH ONLY — we cannot GET these)
-          - RxTx_ = bidirectional (we can GET, speaker responds)
-
-        We MUST NOT send GET on Tx_-only message boxes. The speaker
-        doesn't know how to respond and may emit garbled bytes that
-        misalign our parser.
-
-        Tx_-only MBs (push from speaker on state change):
-          MB#42 (UI Info / Now Playing) — use MB#41 GETUI:PLAY instead
-          MB#49 (Position) — speaker pushes continuously while playing
-          MB#50 (Source) — speaker pushes on change
-          MB#51 (Play State) — speaker pushes on change
-          MB#63 (Mute) — speaker pushes on change
-          MB#210 (BT Status) — speaker pushes on BT events
-
-        We do NOT include those in this refresh. The speaker will
-        proactively push them as state changes occur.
+        We previously tried removing these per a strict spec read and it
+        broke track info / source display / play state, so they stay.
         """
-        # RxTx_ message boxes — safe to GET, speaker responds
-        for mb in (MB_DEVICE_NAME,      # 90  RxTx_ Device Name — GET
-                   MB_FIRMWARE,         # 5   RxTx_ Firmware Version — GET
-                   MB_INTERFACE_IP,     # 123 RxTx_ Interface IP Address — GET
-                   MB_NETWORK_STATUS,   # 124 RxTx_ Network Status — GET
-                   MB_RSSI,             # 151 RxTx_ RSSI — GET
-                   MB_VOLUME,           # 64  RxTx_ Volume Control — GET
-                   MB_TIMEZONE):        # 573 RxTx_ TimeZone — GET
+        # Standard refresh — speaker responds to all of these
+        for mb in (MB_DEVICE_NAME,      # 90  Device Name
+                   MB_FIRMWARE,         # 5   Firmware Version
+                   MB_INTERFACE_IP,     # 123 Interface IP
+                   MB_NETWORK_STATUS,   # 124 Network Status
+                   MB_RSSI,             # 151 RSSI
+                   MB_VOLUME,           # 64  Volume
+                   MB_MUTE,             # 63  Mute (Tx_ but responds)
+                   MB_SOURCE,           # 50  Current Source (Tx_ but responds)
+                   MB_PLAY_STATE,       # 51  Play State (Tx_ but responds)
+                   MB_NOW_PLAYING,      # 42  Now Playing JSON (Tx_ but responds)
+                   MB_POSITION,         # 49  Position (Tx_ but responds)
+                   MB_TIMEZONE,         # 573 TimeZone
+                   MB_BT_STATUS):       # 210 BT Status (Tx_ but responds)
             await self._send(0x01, mb, "")
             await asyncio.sleep(0.05)
 
-        # MB#91 NETWORK INFO — per LUCI spec §9.35, this is SET (not GET)
-        # with a data-driven query: MACADDR (returns both MACs in 2 packets),
-        # IPADDR (returns IP), MACADDR:wlan0 (specific), etc. We use MACADDR
-        # to retrieve both wlan0 and eth0 MAC addresses.
+        # MB#91 NETWORK INFO requires SET MACADDR payload (per spec §9.35)
         await self._send(0x02, MB_NETWORK_INFO, "MACADDR")
         await asyncio.sleep(0.05)
 
-        # MB#42 Now Playing — use MB#41 GETUI:PLAY (the spec-compliant way)
-        # MB#41 is Rx_ (we send), and the speaker responds by pushing MB#42
-        await self._send(0x02, MB_BROWSE, "GETUI:PLAY")
-        await asyncio.sleep(0.05)
-
-        # MB#70 Favourites — spec §9.31: SET FAV_LIST is the correct query.
-        # There is no GET form per spec body. The response arrives on MB#70
-        # SET with FAV_LIST JSON.
+        # MB#70 Favourites — SET FAV_LIST is the documented query form
         await self._send(0x02, MB_FAVOURITES, "FAV_LIST")
-
-        # NV read for SSID via MB#208 RxTx_ NV Read/Write
         await asyncio.sleep(0.05)
+
+        # NV read for SSID via MB#208 — Lithe's published NV-read protocol
         await self.async_read_nv("ssid")
 
     async def async_read_nv(self, item: str) -> None:
@@ -313,6 +296,23 @@ class LitheClient:
         """
         self._pending_nv_read = item
         await self._send(0x02, MB_DEVICE_INFO, f"READ_{item}")
+
+    async def _fetch_now_playing_burst(self) -> None:
+        """Quickly fetch metadata when playback starts.
+
+        Triggered when MB#49 position pushes start arriving but we don't
+        yet have track info / source / play state. Fires off a tight set
+        of GETs to populate the now-playing card without waiting for the
+        next 30s coordinator cycle.
+        """
+        try:
+            await self._send(0x01, MB_SOURCE, "")        # 50  Current Source
+            await asyncio.sleep(0.05)
+            await self._send(0x01, MB_PLAY_STATE, "")    # 51  Play State
+            await asyncio.sleep(0.05)
+            await self._send(0x01, MB_NOW_PLAYING, "")   # 42  Now Playing JSON
+        except Exception as e:
+            _LOGGER.debug("Now-playing burst fetch failed: %s", e)
 
     async def async_get_play_view(self) -> None:
         """Request the current Play View via MB#41 GETUI:PLAY.
@@ -339,9 +339,14 @@ class LitheClient:
         await self._send(0x02, MB_VOLUME, str(max(0, min(100, level))))
 
     async def async_mute(self, mute: bool) -> None:
-        # Per LUCI spec §9.14 — mute/unmute is sent via MB#40 Play Control.
-        # MB#63 is Tx_ only (speaker reports current mute state via push).
-        await self._send(0x02, MB_TRANSPORT, "MUTE" if mute else "UNMUTE")
+        """Mute / unmute speaker.
+
+        Empirically this firmware accepts SET on MB#63 directly. The spec
+        says MB#63 is Tx_ only and mute should go through MB#40 SET MUTE/
+        UNMUTE — but MB#63 SET works and was the proven path in earlier
+        working versions. Keep what works.
+        """
+        await self._send(0x02, MB_MUTE, MUTE_ON if mute else MUTE_OFF)
 
     async def async_play(self) -> None:
         await self._send(0x02, MB_TRANSPORT, TRANSPORT_PLAY)
@@ -390,23 +395,15 @@ class LitheClient:
         await self._send(0x02, MB_DEVICE_NAME, name)
 
     async def async_play_chime(self, chime_number: int) -> None:
-        """Trigger an embedded audiocue.
+        """Trigger an embedded audiocue via LUCI.
 
-        OFFICIAL METHOD (per Lithe support email — what the Lithe app uses):
+        Method per Lithe vendor docs:
+          - Slots 1-9: MB#80 SET "play N"
+          - Slots 10-15: MB#41 SET "PLAYITEM:DIRECT:/system/usr/songN.mp3"
 
-            POST http://<speaker-ip>:81/LitheAudio
-            Content-Type: text/json
-            Body: AudioIndex:1     (for chimes 1-9 via internal slot)
-              or  AudioURL:song1.mp3  (for chimes 10-15 by filename)
-
-        This bypasses the LUCI protocol entirely. The HTTP handler on the
-        speaker directly invokes the audio playback subsystem, including
-        waking the DAC/AMP from standby. This is what makes the chime
-        audible — LUCI MB#80 "play N" reports SUCCESS but the audio path
-        doesn't wake up, so no sound is produced.
-
-        We try HTTP first. If it fails (network error, wrong port, older
-        firmware without the handler), fall back to LUCI MB#80 / MB#41.
+        STANDBY WAKE: when source is 0 (NoSource) the speaker's audio path
+        is in standby. We send MB#70 SET STANDBYOFF first, wait briefly
+        for the DAC/AMP to come up, then fire the chime.
         """
         n = max(1, min(15, int(chime_number)))
         now = asyncio.get_event_loop().time()
@@ -419,61 +416,12 @@ class LitheClient:
             self.state.play_state, self.state.source_id,
         )
 
-        # ── PRIMARY PATH: HTTP POST to /LitheAudio on port 81 ──
-        # Chimes 1-9 use AudioIndex (firmware-internal slot mapping)
-        # Chimes 10-15 use AudioURL with the song file name
-        if n <= 9:
-            body = f"AudioIndex:{n}"
-        else:
-            body = f"AudioURL:song{n}.mp3"
-
-        url = f"http://{self.host}:81/LitheAudio"
-        headers = {"Content-Type": "text/json"}
-
-        http_success = False
-        try:
-            timeout = aiohttp.ClientTimeout(total=3.0)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(url, data=body, headers=headers) as resp:
-                    status = resp.status
-                    text = await resp.text()
-                    if status == 200:
-                        _LOGGER.info(
-                            "CHIME-DIAG HTTP POST %s body=%r → %d (%s)",
-                            url, body, status, text[:80],
-                        )
-                        http_success = True
-                    else:
-                        _LOGGER.warning(
-                            "CHIME-DIAG HTTP POST %s body=%r → %d (%s) — "
-                            "falling back to LUCI",
-                            url, body, status, text[:80],
-                        )
-        except asyncio.TimeoutError:
-            _LOGGER.warning(
-                "CHIME-DIAG HTTP POST to %s timed out — falling back to LUCI",
-                url,
-            )
-        except Exception as e:
-            _LOGGER.warning(
-                "CHIME-DIAG HTTP POST to %s failed: %s — falling back to LUCI",
-                url, e,
-            )
-
-        self._last_chime_time = now
-
-        if http_success:
-            self._last_chime_mbid = 0  # HTTP, not a LUCI MB
-            return
-
-        # ── FALLBACK: LUCI protocol path ──
-        # Wake the audio subsystem out of standby if needed
+        # Wake the audio subsystem out of standby if needed.
+        # source=0 means NoSource — audio path is asleep.
         if self.state.source_id == 0:
-            _LOGGER.info(
-                "CHIME-DIAG fallback LUCI path with source=0 — sending STANDBYOFF first"
-            )
+            _LOGGER.info("CHIME-DIAG source=0 — sending STANDBYOFF to wake audio path")
             await self._send(0x02, MB_FAVOURITES, "STANDBYOFF")
-            await asyncio.sleep(0.25)
+            await asyncio.sleep(0.25)  # DAC/AMP wake time
 
         if n <= 9:
             await self._send(0x02, MB_CHIME, f"play {n}")
@@ -481,6 +429,8 @@ class LitheClient:
         else:
             await self._send(0x02, MB_BROWSE, f"PLAYITEM:DIRECT:/system/usr/song{n}.mp3")
             self._last_chime_mbid = MB_BROWSE
+
+        self._last_chime_time = now
 
     async def async_bluetooth(self, command: str) -> None:
         """BT command: ON / OFF / ENTPAIR / DISCONNECT."""
@@ -801,11 +751,25 @@ class LitheClient:
 
         elif mbid == MB_POSITION:
             try:
-                self.state.position_ms = int(payload)
-                import time as _time
-                self.state.position_updated_at = _time.time()
+                new_pos = int(payload)
             except ValueError:
                 pass
+            else:
+                import time as _time
+                # If position is moving but we don't know what's playing, fire
+                # a fast metadata refresh. Spotify Connect / AirPlay starts
+                # pushing MB#49 immediately but MB#42/50/51 don't always push
+                # on their own — we have to GET them. Without this nudge the
+                # user waits up to 30s (full coordinator cycle) for track
+                # info and source to appear.
+                if (new_pos > 0 and self.state.position_ms == 0
+                        and (not self.state.title or self.state.source_id == 0)):
+                    _LOGGER.debug(
+                        "Position became active with no metadata — fetching now-playing"
+                    )
+                    asyncio.create_task(self._fetch_now_playing_burst())
+                self.state.position_ms = new_pos
+                self.state.position_updated_at = _time.time()
 
         elif mbid == MB_NOW_PLAYING:
             self._parse_now_playing(payload)
