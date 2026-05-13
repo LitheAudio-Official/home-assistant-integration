@@ -321,7 +321,10 @@ class LitheAudioOptionsFlow(config_entries.OptionsFlow):
     """
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        self.config_entry = config_entry
+        # NOTE: In HA Core 2024.12+ `self.config_entry` is a read-only
+        # property on the OptionsFlow base class — we MUST NOT assign to it.
+        # Store it under a private attribute instead.
+        self._entry = config_entry
         self._draft: dict[str, Any] = dict(config_entry.options or {})
 
     # ── Step 1: top-level menu ─────────────────────────────────────────
