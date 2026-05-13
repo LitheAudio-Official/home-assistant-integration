@@ -163,17 +163,13 @@ class LitheClient:
         except Exception:
             pass
 
-        # Register — APP_info key MUST be capitalised, lowercase silently fails
-        if self.use_tls:
-            reg = json.dumps({
-                "APP_info": {
-                    "id": "com.litheaudio.homeassistant",
-                    "version": "1.1.0",
-                    "ip": self.local_ip,
-                }
-            }, separators=(",", ":"))
-        else:
-            reg = self.local_ip
+        # Register. Match the Control4 reference driver: send the host's
+        # network address as a plain string for ALL platforms (LS9 + LS10).
+        # We previously used a JSON {"APP_info": {...}} blob for LS10
+        # speakers, but Control4 — which works reliably — uses plain IP
+        # everywhere. The JSON format may put the speaker in a different
+        # session mode that delays chime processing.
+        reg = self.local_ip
 
         self._writer.write(self._build_packet(0x02, MB_REGISTER, reg))
         await self._writer.drain()
@@ -207,18 +203,8 @@ class LitheClient:
                 if not self.state.connected or not self._writer or self._writer.is_closing():
                     break
                 try:
-                    # Re-register
-                    if self.use_tls:
-                        reg = json.dumps({
-                            "APP_info": {
-                                "id": "com.litheaudio.homeassistant",
-                                "version": "1.1.0",
-                                "ip": self.local_ip,
-                            }
-                        }, separators=(",", ":"))
-                    else:
-                        reg = self.local_ip
-                    self._writer.write(self._build_packet(0x02, MB_REGISTER, reg))
+                    # Re-register with plain IP (matches Control4 driver)
+                    self._writer.write(self._build_packet(0x02, MB_REGISTER, self.local_ip))
                     # Refresh device name (Control4 does this too)
                     self._writer.write(self._build_packet(0x01, MB_DEVICE_NAME, ""))
                     _LOGGER.debug("Heartbeat: re-registered with speaker")
@@ -317,69 +303,37 @@ class LitheClient:
         await self._send(0x02, MB_DEVICE_NAME, name)
 
     async def async_play_chime(self, chime_number: int) -> None:
-        """Trigger an embedded audiocue — minimum-latency path.
+        """Trigger an embedded audiocue.
 
         Per Lithe vendor docs:
           - Slots 1-9: MB#80 "play N"
           - Slots 10-15: MB#41 "PLAYITEM:DIRECT:/system/usr/songN.mp3"
 
-        No wake-up, no retry, no drain — this is the canonical wire format
-        and the speaker is supposed to respond instantly. If it doesn't,
-        that's a bug we need to identify (not patch around). Diagnostic
-        logging tells us exactly what the speaker did with each command.
+        Uses the standard _send() path — same code as every other command.
+        No fast-path, no custom packet builder, no drain skip. If chimes
+        were broken because of fast-path cleverness, this fixes it.
         """
         n = max(1, min(15, int(chime_number)))
-
-        if n <= 9:
-            mbid = MB_CHIME
-            payload = f"play {n}".encode("utf-8")
-        else:
-            mbid = MB_BROWSE
-            payload = f"PLAYITEM:DIRECT:/system/usr/song{n}.mp3".encode("utf-8")
-        pkt = struct.pack("<HBHBHH", 0xAAAA, 0x02, mbid, 0, 0x0000, len(payload)) + payload + b"\x00"
-
-        w = self._writer
         now = asyncio.get_event_loop().time()
         silence = now - (self._last_rx_time or 0.0)
-
-        # Diagnostic: capture exact state at moment of press
-        sock_state = "no_writer"
-        if w is not None:
-            sock_state = "closing" if w.is_closing() else "open"
-
+        sock_state = "no_writer" if self._writer is None else (
+            "closing" if self._writer.is_closing() else "open"
+        )
         _LOGGER.info(
-            "CHIME-DIAG slot=%d mbid=%d sock=%s silence_since_rx=%.1fs "
+            "CHIME-DIAG slot=%d sock=%s silence_since_rx=%.1fs "
             "connected=%s play_state=%s source=%d",
-            n, mbid, sock_state, silence,
+            n, sock_state, silence,
             self.state.connected, self.state.play_state, self.state.source_id,
         )
 
-        # source=17 (Direct URL) means the speaker is still in the audio
-        # path of a previous chime/URL playback. Pressing a new chime now
-        # will be slow (~4s) because the firmware has to unwind that path
-        # before it can play the new cue. This is firmware behaviour, not
-        # something we can fix from the host side. Log it so the user knows.
-        if self.state.source_id == 17:
-            _LOGGER.warning(
-                "Chime: speaker is in Direct URL source — first chime will "
-                "take ~4s while the speaker's audio path resets. Subsequent "
-                "presses (once source returns to a normal source) are instant."
-            )
+        if n <= 9:
+            await self._send(0x02, MB_CHIME, f"play {n}")
+            self._last_chime_mbid = MB_CHIME
+        else:
+            await self._send(0x02, MB_BROWSE, f"PLAYITEM:DIRECT:/system/usr/song{n}.mp3")
+            self._last_chime_mbid = MB_BROWSE
 
-        if w is None or w.is_closing():
-            _LOGGER.error("CHIME-DIAG socket dead at press — packet NOT sent")
-            return
-
-        try:
-            w.write(pkt)
-        except Exception as e:
-            _LOGGER.error("CHIME-DIAG write failed: %s", e)
-            return
-
-        _LOGGER.debug("TX SET MB#%d (%d bytes): %s", mbid, len(payload), payload.decode("utf-8", "replace"))
-        # Remember when this chime was fired so the RX handler can log time-to-ack
         self._last_chime_time = now
-        self._last_chime_mbid = mbid
 
     async def async_bluetooth(self, command: str) -> None:
         """BT command: ON / OFF / ENTPAIR / DISCONNECT."""
@@ -454,56 +408,62 @@ class LitheClient:
     def _process_buffer(self) -> None:
         """Parse all complete packets from buffer.
 
-        RX header layout (10 bytes total, per LUCI spec):
-            offset 0-1:  RemoteID  (2 bytes)
-            offset 2:    CmdType   (1 byte)
-            offset 3-4:  MBID      (2 bytes, BE on RX)
-            offset 5:    Status    (1 byte)
-            offset 6-7:  CRC       (2 bytes)
-            offset 8-9:  DataLen   (2 bytes, BE on RX)
+        Strategy:
+          1. Read DataLen from offset 8-9 (BE — empirically the speaker
+             uses BE on TX).
+          2. Calculate packet end at 10 + data_len.
+          3. SANITY CHECK: the byte immediately after this packet should
+             be either a NUL terminator (0x00) followed by next packet's
+             RID, OR the start of the next packet's RID directly (0xAA).
+             If neither matches, the parser is misaligned — RESYNC by
+             scanning forward for the next plausible packet start.
+          4. After a successful sanity check, consume the packet AND any
+             trailing NUL terminator before continuing.
 
-        IMPORTANT — the spec says TX and RX framing are asymmetric:
-          - On TX we send LE, DataLen = payload length only, NUL appended.
-          - On RX the speaker sends BE, and DataLen on incoming packets
-            INCLUDES the trailing NUL byte. So the next packet starts at
-            offset (10 + DataLen) with NO additional skip.
+        This protects against any single mis-parsed packet propagating
+        forever — common cause of "chime command sent but no response"
+        because all subsequent responses get glued onto a phantom packet.
         """
         while len(self._buf) >= 10:
             try:
-                # Per vendor official Python example (LITHE_AUDIO_INTEGRATION_API
-                # §10.2), the RX header is ALL little-endian:
-                #   remote_id, cmd_type, mbid, status, crc, data_len = struct.unpack("<H B H B H H", packet[:10])
-                # (Earlier versions of this code used BE which works for MBs
-                # 0-255 since the high byte is 0, but breaks MB#573 timezone,
-                # high DSP sub-IDs, and any other MB > 255.)
-                data_len = struct.unpack_from("<H", self._buf, 8)[0]
+                data_len = struct.unpack_from(">H", self._buf, 8)[0]
             except struct.error:
                 break
+
+            # Hard cap: legitimate LUCI payloads are well under 16KB.
+            # Anything bigger means misalignment — resync now.
+            if data_len > 16384:
+                _LOGGER.warning(
+                    "Implausible DataLen=%d at buf head — resyncing parser",
+                    data_len,
+                )
+                self._resync_buffer()
+                continue
+
             total = 10 + data_len
             if len(self._buf) < total:
-                break
+                break  # need more bytes
 
-            # Read RemoteID — identifies which device the packet is from when
-            # multiple speakers are paired/grouped on the same LUCI connection.
-            # We DO NOT filter on it yet — empirically the same speaker emits
-            # packets with different RemoteIDs depending on the source/role
-            # (Spotify Connect responses use a different RemoteID than direct
-            # LUCI control). Hard filtering broke MB#80 responses and device
-            # info GETs. Instead we just track which RemoteIDs we've seen for
-            # diagnostic purposes.
+            # Sanity-check: byte after this packet should be a known start
+            # of next packet (0x00 NUL terminator, or 0xAA RID start).
+            need_sanity = total < len(self._buf)
+            if need_sanity:
+                next_byte = self._buf[total]
+                if next_byte not in (0x00, 0xAA):
+                    _LOGGER.warning(
+                        "Packet boundary mismatch (next byte 0x%02x after "
+                        "DataLen=%d) — resyncing parser",
+                        next_byte, data_len,
+                    )
+                    self._resync_buffer()
+                    continue
+
+            # Header fields
             try:
-                remote_id = struct.unpack_from("<H", self._buf, 0)[0]
+                remote_id = struct.unpack_from(">H", self._buf, 0)[0]
             except struct.error:
                 remote_id = 0
-
-            mbid = struct.unpack_from("<H", self._buf, 3)[0]
-            # Status byte at offset 5: per LUCI spec §4.1.1,
-            #   0 = invalid/ignore (and for commands: NA)
-            #   1 = Success
-            #   2 = Generic error
-            #   3 = Device not ready for specific command
-            #   4 = CRC error
-            # For Response packets this byte carries success/failure.
+            mbid = struct.unpack_from(">H", self._buf, 3)[0]
             status = self._buf[5]
             payload_bytes = self._buf[10:10 + data_len]
             try:
@@ -511,7 +471,12 @@ class LitheClient:
             except Exception:
                 payload = ""
 
+            # Consume this packet
             self._buf = self._buf[total:]
+            # If followed by NUL terminator, skip it too
+            if self._buf and self._buf[0] == 0x00:
+                self._buf = self._buf[1:]
+
             self._last_rx_time = asyncio.get_event_loop().time()
 
             # Track RemoteIDs we see for diagnostics
@@ -522,13 +487,11 @@ class LitheClient:
                     remote_id, mbid, payload[:80],
                 )
 
-            # Also log every packet's RemoteID + Status at debug level
             _LOGGER.debug(
                 "RX MB#%d (rid=0x%04x, status=%d, %d bytes): %s",
                 mbid, remote_id, status, data_len, payload[:200],
             )
 
-            # Status != 0/1 indicates a real failure code from the spec
             if status not in (0, 1):
                 _LOGGER.warning(
                     "RX MB#%d returned status=%d (%s). RID=0x%04x payload=%r",
@@ -539,6 +502,35 @@ class LitheClient:
                 )
 
             self._handle_push(mbid, payload)
+
+    def _resync_buffer(self) -> None:
+        """Scan forward in self._buf for the next plausible packet header.
+
+        Plausible header starts with RemoteID = 0xAAAA (sent by speaker
+        in most cases) or 0x0000 (also seen). We look for either pattern
+        and discard bytes before it.
+        """
+        # Find the next 0xAA 0xAA or skip past any NUL trailers
+        i = 1
+        while i < len(self._buf) - 1:
+            b0 = self._buf[i]
+            b1 = self._buf[i+1]
+            if (b0 == 0xAA and b1 == 0xAA) or (b0 == 0x00 and b1 == 0x00):
+                # Found plausible start of next packet
+                discarded = i
+                self._buf = self._buf[i:]
+                _LOGGER.warning(
+                    "Resynced — discarded %d bytes to next packet header",
+                    discarded,
+                )
+                return
+            i += 1
+        # No plausible start found — discard everything and start fresh
+        _LOGGER.warning(
+            "Resync failed — discarded %d bytes (no plausible packet header)",
+            len(self._buf),
+        )
+        self._buf = b""
 
     def _handle_push(self, mbid: int, payload: str) -> None:
         """Handle an incoming message from the speaker.
@@ -1018,13 +1010,13 @@ class LitheClientLS9(LitheClient):
                     buf += chunk
                     while len(buf) >= 10:
                         try:
-                            data_len = struct.unpack_from("<H", buf, 8)[0]
+                            data_len = struct.unpack_from(">H", buf, 8)[0]
                         except struct.error:
                             break
                         total = 10 + data_len
                         if len(buf) < total:
                             break
-                        r_mbid = struct.unpack_from("<H", buf, 3)[0]
+                        r_mbid = struct.unpack_from(">H", buf, 3)[0]
                         r_payload = buf[10:10 + data_len].decode("utf-8", "replace").rstrip("\x00")
                         buf = buf[total:]
                         if r_mbid != MB_PLAYBACK_AUTH:
