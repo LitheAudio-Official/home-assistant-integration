@@ -33,6 +33,7 @@ async def async_setup_entry(
         LitheRSSISensor(coordinator, entry),
         LitheNetworkStatusSensor(coordinator, entry),
         LitheSpeakerStatusSensor(coordinator, entry),
+        LithePlayerRoleSensor(coordinator, entry),
     ])
 
 
@@ -224,3 +225,25 @@ class LitheSpeakerStatusSensor(_LitheBaseSensor):
     @property
     def native_value(self) -> str:
         return self._client.state.speaker_status or ("Connected" if self._client.state.connected else "Disconnected")
+
+
+class LithePlayerRoleSensor(_LitheBaseSensor):
+    """Speaker's role in a grouped playback session (Free/Master/Slave).
+
+    From Lithe API_NEW page 25 'getenv PlayerState':
+      Free   — standalone, can trigger chimes itself
+      Master — leads a group, can trigger chimes for the group
+      Slave  — synced playback controlled by another device.
+               Chime commands silently fail because audio is routed
+               via the master. Trigger cues on the master instead.
+    """
+    _attr_name = "Player Role"
+    _attr_icon = "mdi:account-music"
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.data['host']}_{entry.entry_id}_player_role"
+
+    @property
+    def native_value(self) -> str:
+        return self._client.state.player_role or "Unknown"
