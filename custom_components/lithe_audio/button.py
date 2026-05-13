@@ -1,6 +1,8 @@
 """Button entities for Lithe Audio — chimes, reboot, factory defaults."""
 from __future__ import annotations
 
+import logging
+
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
@@ -12,6 +14,8 @@ from .const import (
     CONF_PRODUCT, DATA_COORDINATOR, DOMAIN, PRODUCT_CHIMES,
 )
 from .coordinator import LitheAudioCoordinator
+
+_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
@@ -57,18 +61,33 @@ class _LitheBaseButton(CoordinatorEntity[LitheAudioCoordinator], ButtonEntity):
         self.async_write_ha_state()
 
 
-class LitheChimeButton(_LitheBaseButton):
-    """Play a single chime slot."""
+class LitheChimeButton(ButtonEntity):
+    """Play a single chime slot — standalone (not coordinator-gated) for
+    minimum latency between press and wire."""
 
+    _attr_has_entity_name = True
     _attr_icon = "mdi:music-note"
 
-    def __init__(self, coordinator, entry, slot: int):
-        super().__init__(coordinator, entry)
+    def __init__(self, coordinator: LitheAudioCoordinator, entry: ConfigEntry, slot: int):
+        self._coordinator = coordinator
+        self._client = coordinator.client
+        self._entry = entry
         self._slot = slot
         self._attr_name = f"Chime {slot}"
         self._attr_unique_id = f"{entry.data['host']}_{entry.entry_id}_chime_{slot}"
 
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(identifiers={(DOMAIN, self._entry.data["host"])})
+
+    @property
+    def available(self) -> bool:
+        # Always show as available — the chime fire path tolerates disconnection
+        # and we don't want HA gating the press on coordinator state freshness.
+        return True
+
     async def async_press(self) -> None:
+        _LOGGER.info("Chime button %d pressed", self._slot)
         await self._client.async_play_chime(self._slot)
 
 

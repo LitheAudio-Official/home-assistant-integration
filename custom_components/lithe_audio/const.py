@@ -99,12 +99,23 @@ MB_NETWORK_INFO   = 91
 MB_DSP            = 112
 MB_REBOOT_REQ     = 114   # Reboot Request (was incorrectly 37)
 MB_REBOOT_CMD     = 115
+MB_INTERFACE_IP   = 123   # RxTx_MB#123 — current network interface + IP address
+MB_NETWORK_STATUS = 124   # RxTx_MB#124 — WLAN/ETH/P2P active interface status
 MB_FACTORY_RESET  = 150
-MB_DEVICE_INFO    = 208
+MB_RSSI           = 151   # RxTx_MB#151 — WiFi signal strength (dBm)
+MB_DEVICE_INFO    = 208   # Also used for NV Read/Write (READ_<NVitem>)
 MB_BLUETOOTH      = 209
 MB_BT_STATUS      = 210
 MB_CAST_STATUS    = 572
 MB_TIMEZONE       = 573
+
+# ── MB#124 active network values ────────────────────────────────────────────
+NETWORK_STATUS = {
+    "1": "WLAN",
+    "2": "Ethernet",
+    "3": "P2P",
+    "4": "WAC/SAC/LS-Connect",
+}
 
 # ── Transport commands (MB#40 payload) ──────────────────────────────────────
 TRANSPORT_PLAY    = "PLAY"

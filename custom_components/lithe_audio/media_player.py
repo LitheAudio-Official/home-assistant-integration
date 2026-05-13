@@ -11,6 +11,7 @@ from homeassistant.components.media_player import (
     MediaPlayerEntityFeature,
     MediaPlayerState,
     MediaType,
+    RepeatMode,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
@@ -35,6 +36,8 @@ _PLAYABLE_TYPES = {
 
 # Internal content_id prefix for favourites
 _FAV_PREFIX = "lithe_fav://"
+# Internal content_id prefix for chimes
+_CHIME_PREFIX = "lithe_chime://"
 
 
 async def async_setup_entry(
@@ -98,6 +101,8 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
             | MediaPlayerEntityFeature.SELECT_SOURCE
             | MediaPlayerEntityFeature.PLAY_MEDIA
             | MediaPlayerEntityFeature.BROWSE_MEDIA
+            | MediaPlayerEntityFeature.SHUFFLE_SET
+            | MediaPlayerEntityFeature.REPEAT_SET
         )
         # SEEK only when source is not a live stream
         if not self._client.state.is_live:
@@ -178,6 +183,19 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
         return MediaType.MUSIC
 
     @property
+    def shuffle(self) -> bool:
+        return self._client.state.shuffle
+
+    @property
+    def repeat(self) -> RepeatMode:
+        m = (self._client.state.repeat or "off").lower()
+        return {
+            "off": RepeatMode.OFF,
+            "all": RepeatMode.ALL,
+            "one": RepeatMode.ONE,
+        }.get(m, RepeatMode.OFF)
+
+    @property
     def extra_state_attributes(self) -> dict[str, Any]:
         s = self._client.state
         return {
@@ -225,6 +243,14 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
     async def async_media_seek(self, position: float) -> None:
         await self._client.async_seek(int(position * 1000))
 
+    async def async_set_shuffle(self, shuffle: bool) -> None:
+        """Toggle shuffle mode."""
+        await self._client.async_set_shuffle(shuffle)
+
+    async def async_set_repeat(self, repeat: RepeatMode) -> None:
+        """Set repeat mode (off / all / one)."""
+        await self._client.async_set_repeat(str(repeat))
+
     async def async_select_source(self, source: str) -> None:
         """Switch source. Most sources require external triggering (Spotify Connect,
         AirPlay, Cast etc) but Bluetooth / AUX / SPDIF / Favourites can be set."""
@@ -258,8 +284,22 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
         media_content_type: str | None = None,
         media_content_id: str | None = None,
     ) -> BrowseMedia:
-        """Top-level browse → list favourites. Each favourite is playable."""
+        """Top-level browse → list favourites + chimes + browse sources.
+
+        On open, send GETUI:HOME (and GETUI:PLAY for parity) so the speaker
+        pushes the current browse view through MB#42 — useful for sources
+        like Airable / USB / DMR that have nested catalogs.
+        """
+        # Ask speaker to push its current Home view (response arrives on MB#42)
+        try:
+            await self._client.async_get_home_view()
+            # Also refresh play view in case media app needs it
+            await self._client.async_get_play_view()
+        except Exception as e:
+            _LOGGER.debug("GETUI request failed (non-fatal): %s", e)
+
         children = []
+        # Favourites first
         for fav in self._client.state.favourites:
             children.append(BrowseMedia(
                 title=fav.get("name", f"Favourite {fav.get('slot')}"),

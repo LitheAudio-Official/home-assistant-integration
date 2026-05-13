@@ -1,8 +1,11 @@
 """Sensor entities for Lithe Audio — read-only state."""
 from __future__ import annotations
 
-from homeassistant.components.sensor import SensorEntity, SensorStateClass
+from homeassistant.components.sensor import (
+    SensorDeviceClass, SensorEntity, SensorStateClass,
+)
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import SIGNAL_STRENGTH_DECIBELS_MILLIWATT
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -25,6 +28,11 @@ async def async_setup_entry(
         LitheWifiBandSensor(coordinator, entry),
         LitheTimezoneSensor(coordinator, entry),
         LitheUptimeSensor(coordinator, entry),
+        LitheIpAddressSensor(coordinator, entry),
+        LitheSSIDSensor(coordinator, entry),
+        LitheRSSISensor(coordinator, entry),
+        LitheNetworkStatusSensor(coordinator, entry),
+        LitheSpeakerStatusSensor(coordinator, entry),
     ])
 
 
@@ -135,3 +143,84 @@ class LitheUptimeSensor(_LitheBaseSensor):
     def set_uptime(self, hours: float) -> None:
         self._uptime_h = hours
         self.async_write_ha_state()
+
+
+class LitheIpAddressSensor(_LitheBaseSensor):
+    """Speaker's network IP address (from MB#123)."""
+    _attr_name = "IP Address"
+    _attr_icon = "mdi:ip-network"
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.data['host']}_{entry.entry_id}_ip"
+
+    @property
+    def native_value(self) -> str:
+        # Fall back to the host IP we connected to if speaker hasn't pushed yet
+        return self._client.state.ip_address or self._entry.data.get("host", "Unknown")
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        return {
+            "interface": self._client.state.network_interface or "Unknown",
+        }
+
+
+class LitheSSIDSensor(_LitheBaseSensor):
+    """Connected Wi-Fi SSID (from NV item read via MB#208)."""
+    _attr_name = "SSID"
+    _attr_icon = "mdi:wifi-marker"
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.data['host']}_{entry.entry_id}_ssid"
+
+    @property
+    def native_value(self) -> str:
+        return self._client.state.ssid or "Unknown"
+
+
+class LitheRSSISensor(_LitheBaseSensor):
+    """Wi-Fi signal strength in dBm (from MB#151)."""
+    _attr_name = "Wi-Fi Signal"
+    _attr_icon = "mdi:wifi-strength-2"
+    _attr_native_unit_of_measurement = SIGNAL_STRENGTH_DECIBELS_MILLIWATT
+    _attr_device_class = SensorDeviceClass.SIGNAL_STRENGTH
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.data['host']}_{entry.entry_id}_rssi"
+
+    @property
+    def native_value(self) -> int | None:
+        v = self._client.state.wifi_rssi_dbm
+        return v if v != 0 else None
+
+
+class LitheNetworkStatusSensor(_LitheBaseSensor):
+    """Active network interface (WLAN/Ethernet/P2P/Config) from MB#124."""
+    _attr_name = "Network"
+    _attr_icon = "mdi:lan-connect"
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.data['host']}_{entry.entry_id}_network_status"
+
+    @property
+    def native_value(self) -> str:
+        return self._client.state.network_status or "Unknown"
+
+
+class LitheSpeakerStatusSensor(_LitheBaseSensor):
+    """Speaker status (Connected/Standby) — derived from MB#124."""
+    _attr_name = "Speaker Status"
+    _attr_icon = "mdi:speaker-wireless"
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.data['host']}_{entry.entry_id}_speaker_status"
+
+    @property
+    def native_value(self) -> str:
+        return self._client.state.speaker_status or ("Connected" if self._client.state.connected else "Disconnected")
