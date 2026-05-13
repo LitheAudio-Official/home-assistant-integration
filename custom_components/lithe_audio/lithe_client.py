@@ -14,7 +14,8 @@ from .const import (
     DEFAULT_PORT, MB_AUDIOCUE, MB_BLUETOOTH, MB_BROWSE, MB_BT_STATUS, MB_CHIME,
     MB_DEVICE_INFO, MB_DEVICE_NAME, MB_DSP, MB_FACTORY_RESET, MB_FAVOURITES,
     MB_FIRMWARE, MB_INTERFACE_IP, MB_MUTE, MB_NETWORK_INFO, MB_NETWORK_STATUS,
-    MB_NOW_PLAYING, MB_PLAY_STATE, MB_PLAYBACK_AUTH, MB_POSITION, MB_REBOOT_REQ,
+    MB_NOW_PLAYING, MB_PLAY_STATE, MB_PLAYBACK_AUTH, MB_PLAYBACK_GRANT,
+    MB_POSITION, MB_REBOOT_REQ,
     MB_REGISTER, MB_RSSI, MB_SOURCE, MB_TIMEZONE, MB_TRANSPORT, MB_VOLUME,
     MUTE_OFF, MUTE_ON, NETWORK_STATUS, PLAY_STATES, SOURCES, TRANSPORT_NEXT,
     TRANSPORT_PAUSE, TRANSPORT_PLAY, TRANSPORT_PREV, TRANSPORT_RESUME,
@@ -417,20 +418,22 @@ class LitheClient:
     async def async_play_chime(self, chime_number: int) -> None:
         """Trigger an embedded audiocue.
 
-        Uses the same sequence as Prayer Scheduler / tannoy notify (proven
-        to work in the standalone webapp):
+        Empirical state of this firmware (CR443GP_3713) after many tests:
 
-          1. STOP current source (terminates Spotify Connect session and
-             releases the audio mixer)
-          2. Wait 400ms for the firmware to release the audio path
-          3. PLAYITEM:DIRECT — speaker switches to source 17 (Direct URL)
-             and plays the embedded MP3
+        - MB#80 'play N': returns SUCCESS in <50ms, no audible output
+        - MB#41 PLAYITEM:DIRECT:/system/usr/songN.mp3: no response, no audio
+        - PAUSE → PLAYITEM:DIRECT: source stays on Spotify, PLAYITEM ignored
+        - STOP → PLAYITEM:DIRECT: speaker pushes SPEAKER_INACTIVE,4 then
+          ignores PLAYITEM completely
 
-        Key insight: PAUSE doesn't work — Spotify Connect keeps the
-        session open and the audio path stays owned. STOP terminates the
-        session, freeing source 17 to take over.
+        Every documented method we've tried fails to produce audible
+        output on this firmware. The integration sends spec-compliant
+        commands, the speaker firmware acknowledges them, but no sound
+        emerges. This is a firmware-side issue we cannot fix from here.
 
-        All slots 1-15 use MB#41 PLAYITEM:DIRECT:/system/usr/songN.mp3.
+        Best we can do is send the documented MB#41 PLAYITEM:DIRECT and
+        let the firmware decide. If/when Lithe support replies with the
+        right command sequence we'll wire it in.
         """
         n = max(1, min(15, int(chime_number)))
         now = asyncio.get_event_loop().time()
@@ -444,20 +447,9 @@ class LitheClient:
         )
 
         try:
-            # 1) Unmute if muted (audio path must be open)
-            if self.state.muted:
-                await self._send(0x02, MB_TRANSPORT, "UNMUTE")
-
-            # 2) STOP current source unconditionally (works in any state
-            #    per spec §9.14). This releases Spotify Connect's hold on
-            #    the audio mixer — PAUSE alone does NOT do this.
-            await self._send(0x02, MB_TRANSPORT, "STOP")
-
-            # 3) Settle time for firmware to release the audio path
-            await asyncio.sleep(0.4)
-
-            # 4) Fire the chime via MB#41 PLAYITEM:DIRECT — source becomes
-            #    17 (Direct URL), file plays, naturally ends
+            # Send MB#41 PLAYITEM:DIRECT — the documented Method B from
+            # Lithe API_NEW p24. No STOP/PAUSE preamble (those make it
+            # worse on this firmware).
             await self._send(
                 0x02, MB_BROWSE,
                 f"PLAYITEM:DIRECT:/system/usr/song{n}.mp3",
@@ -720,10 +712,31 @@ class LitheClient:
         changed = True
 
         if mbid == MB_PLAYBACK_AUTH:
-            # HOST MCU only — NEVER respond (sending MB#11 stops playback)
+            # ── Playback Authorisation flow (LUCI spec §9.7) ──
+            # Speaker sends MB#10 with the new source ID when a source
+            # change is requested (e.g. our PLAYITEM:DIRECT triggers
+            # source 17). It then waits 5-7 seconds for our MB#11 grant.
+            # If we don't respond (or respond with 0) the new source is
+            # DENIED and playback stops silently.
+            #
+            # We grant unconditionally — denying is reserved for HOST MCUs
+            # that need to coordinate gain tables or audio routing before
+            # the new source takes over. For HA integration the right
+            # default is "allow" so all source switches proceed.
+            new_source = payload.strip()
             if self._last_chime_time:
                 ms = (asyncio.get_event_loop().time() - self._last_chime_time) * 1000.0
-                _LOGGER.info("CHIME-DIAG MB#10 (playback auth) +%.1fms: %r", ms, payload)
+                _LOGGER.info(
+                    "MB#10 (PlaybackAuth) new_source=%r +%.1fms — granting via MB#11=1",
+                    new_source, ms,
+                )
+            else:
+                _LOGGER.info(
+                    "MB#10 (PlaybackAuth) new_source=%r — granting via MB#11=1",
+                    new_source,
+                )
+            # Schedule the grant; respond fast (target 50-500ms per spec)
+            asyncio.create_task(self._send(0x02, MB_PLAYBACK_GRANT, "1"))
             return
 
         elif mbid == MB_DEVICE_NAME:
