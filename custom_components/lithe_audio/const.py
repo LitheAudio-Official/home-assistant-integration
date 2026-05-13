@@ -150,13 +150,23 @@ BT_DISC    = "DISCONNECT"
 # Confirmed from live capture: PRO2 firmware CR443GP_3713
 # ── DSP sub-MB IDs (tunneled inside MB#112) ─────────────────────────────────
 # Verified against real firmware CR443GP_3713 packet captures.
+# ── DSP sub-MB IDs (MB#112 payload first byte) ──────────────────────────────
+# These are empirically verified by user testing on PRO 2 (CR443GP_3713).
+# The earlier mapping had OUTPUT and HIGHPASS swapped — corrected here based
+# on user testing 2026-05-13: "HPF 80Hz changes to left speaker only, HPF 60Hz
+# is stereo, off is mono, 100Hz is right" — those are clearly OUTPUT MODE
+# values, not high-pass cut-off frequencies.
 DSP_EQ        = 0x0A   # 0=Normal 1=Acoustic 2=Jazz 3=Pop 4=HipHop (confirmed)
-DSP_OUTPUT    = 0x09   # 0=Stereo 1=Mono 2=Left 3=Right (firmware uses values 2-6)
-DSP_NIGHTMODE = 0x0C   # 0=OFF 1=ON (toggle observed in capture)
-DSP_LOUDNESS  = 0x0D   # PRO2: signed byte -10..+10  |  V3/iO1: 0=OFF 1=ON (toggle observed)
-DSP_HIGHPASS  = 0x0F   # 0=OFF 1=60Hz 2=80Hz 3=100Hz 4=120Hz (toggle observed at 0x0F)
-DSP_TUNING    = 0x15   # 0=13L Enclosure 1=Open Back  (PRO2 only, observed at 0x15)
-DSP_BALANCE   = 0x29   # signed byte -6..+6  (observed at 0x29)
+DSP_TREBLE    = 0x09   # Treble cut/boost — was incorrectly labelled OUTPUT
+DSP_NIGHTMODE = 0x0C   # 0=OFF 1=ON (confirmed working)
+DSP_LOUDNESS  = 0x0D   # PRO2: signed byte -10..+10  |  V3/iO1: 0=OFF 1=ON
+DSP_OUTPUT    = 0x0F   # 0=Stereo, 1=Mono, 2=Left, 3=Right (was labelled HIGHPASS)
+DSP_BALANCE   = 0x29   # signed byte -6..+6 (confirmed)
+# Speaker Tuning sub-MB unknown — 0x15 doesn't respond on this firmware.
+# Disable Tuning select until we find the right sub-MB ID.
+DSP_TUNING    = 0xFF   # placeholder — feature disabled
+# High Pass Filter sub-MB unknown — need to find via packet capture from app
+DSP_HIGHPASS  = 0xFE   # placeholder — feature disabled
 
 EQ_PRESETS  = ["Normal", "Acoustic", "Jazz", "Pop", "Hip-Hop"]
 HP_OPTIONS  = ["OFF", "60Hz", "80Hz", "100Hz", "120Hz"]

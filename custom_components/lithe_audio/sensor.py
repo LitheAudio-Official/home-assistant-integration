@@ -33,7 +33,6 @@ async def async_setup_entry(
         LitheRSSISensor(coordinator, entry),
         LitheNetworkStatusSensor(coordinator, entry),
         LitheSpeakerStatusSensor(coordinator, entry),
-        LithePlayerRoleSensor(coordinator, entry),
     ])
 
 

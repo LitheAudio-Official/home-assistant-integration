@@ -292,11 +292,6 @@ class LitheClient:
         # NV read for SSID via MB#208 — Lithe's published NV-read protocol
         await self.async_read_nv("ssid")
 
-        # PlayerState query — tells us if device is Free/Master/Slave in a group.
-        # Crucial for chime behaviour: Slave devices need cues routed to master.
-        await asyncio.sleep(0.05)
-        await self._send(0x02, MB_BROWSE, "getenv PlayerState")
-
     async def async_read_nv(self, item: str) -> None:
         """Read an NV item via MB#208 SET READ_<item>.
 
@@ -406,16 +401,21 @@ class LitheClient:
     async def async_play_chime(self, chime_number: int) -> None:
         """Trigger an embedded audiocue via LUCI.
 
-        Method per Lithe API doc (page 24, "Embedded Chimes / Prompts"):
-          - Method A: MB#80 SET "play N"  (slots 1-9)
-          - Method B: MB#41 SET "PLAYITEM:DIRECT:/system/usr/songN.mp3"  (slots 10-15)
+        IMPORTANT — empirical behaviour on this PRO 2 firmware:
 
-        PlayerState awareness (API doc page 25): If the device is a Slave
-        in a grouped session, "cue triggers should be directed to the
-        Master device for consistent behaviour". We don't yet know who the
-        master is — log PlayerState so the user can see the role and we
-        can troubleshoot. If it returns 2 (Slave), chimes will silently
-        fail to play because the master controls the audio path.
+        MB#80 'play N' returns SUCCESS but the audio output stays silent.
+        The MCU accepts the command, the firmware reports success, but
+        nothing reaches the speaker cone.
+
+        MB#41 PLAYITEM:DIRECT /system/usr/songN.mp3 forces the speaker to
+        switch source to Direct URL (source=17) and pump the file through
+        the standard playback pipeline. This wakes the audio path and
+        produces audible output — at the cost of briefly interrupting the
+        previous source.
+
+        Use MB#41 PLAYITEM:DIRECT for ALL 15 chimes — it's the path that
+        empirically works on this firmware. Slots 1-15 map to song1.mp3
+        through song15.mp3 in /system/usr/.
         """
         n = max(1, min(15, int(chime_number)))
         now = asyncio.get_event_loop().time()
@@ -423,40 +423,15 @@ class LitheClient:
             "closing" if self._writer.is_closing() else "open"
         )
         _LOGGER.info(
-            "CHIME-DIAG slot=%d sock=%s connected=%s play_state=%s source=%d player_state=%s",
+            "CHIME-DIAG slot=%d sock=%s connected=%s play_state=%s source=%d",
             n, sock_state, self.state.connected,
             self.state.play_state, self.state.source_id,
-            self.state.player_role or "unknown",
         )
 
-        # Query PlayerState every chime so we know the device's role.
-        # Per Lithe API_NEW page 24: "getenv PlayerState" returns 0=Free,
-        # 1=Master, 2=Slave. The command goes via MB#41 (browse/UI input).
-        # The response arrives asynchronously on MB#42 with PlayerState in
-        # the JSON.
-        try:
-            await self._send(0x02, MB_BROWSE, "getenv PlayerState")
-        except Exception as e:
-            _LOGGER.debug("getenv PlayerState failed: %s", e)
-
-        # If we already know we're a Slave, warn loudly — the chime will
-        # silently fail because cue audio is routed via the master device.
-        if self.state.player_role == "Slave":
-            _LOGGER.warning(
-                "Speaker is a Slave in a grouped session. Chime command "
-                "will return SUCCESS but no audio will play — Lithe protocol "
-                "requires cues to be triggered on the Master device. "
-                "Un-group the speakers in the Lithe app, or trigger the "
-                "chime on the master device."
-            )
-
-        if n <= 9:
-            await self._send(0x02, MB_CHIME, f"play {n}")
-            self._last_chime_mbid = MB_CHIME
-        else:
-            await self._send(0x02, MB_BROWSE, f"PLAYITEM:DIRECT:/system/usr/song{n}.mp3")
-            self._last_chime_mbid = MB_BROWSE
-
+        # All slots via MB#41 PLAYITEM:DIRECT — the path that actually
+        # produces audible output on this PRO 2 firmware
+        await self._send(0x02, MB_BROWSE, f"PLAYITEM:DIRECT:/system/usr/song{n}.mp3")
+        self._last_chime_mbid = MB_BROWSE
         self._last_chime_time = now
 
     async def async_bluetooth(self, command: str) -> None:
@@ -799,26 +774,7 @@ class LitheClient:
                 self.state.position_updated_at = _time.time()
 
         elif mbid == MB_NOW_PLAYING:
-            # Some MB#42 responses are answers to getenv PlayerState etc.
-            # rather than full now-playing JSON. Detect those first.
-            stripped = payload.strip()
-            if stripped in ("0", "1", "2") and len(stripped) <= 2:
-                # PlayerState single-digit reply
-                role = {"0": "Free", "1": "Master", "2": "Slave"}.get(stripped, "")
-                if role:
-                    self.state.player_role = role
-                    _LOGGER.info("PlayerState = %s (%s)", stripped, role)
-            elif stripped.startswith("PlayerState"):
-                # Format may be "PlayerState:2" or similar
-                if ":" in stripped:
-                    val = stripped.split(":", 1)[1].strip()
-                    role = {"0": "Free", "1": "Master", "2": "Slave"}.get(val, "")
-                    if role:
-                        self.state.player_role = role
-                        _LOGGER.info("PlayerState = %s (%s)", val, role)
-            else:
-                # Standard now-playing JSON
-                self._parse_now_playing(payload)
+            self._parse_now_playing(payload)
 
         elif mbid == MB_NETWORK_INFO:
             # MB#91 has the format: <Interface>:<MAC>

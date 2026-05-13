@@ -284,21 +284,18 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
         media_content_type: str | None = None,
         media_content_id: str | None = None,
     ) -> BrowseMedia:
-        """Top-level browse → list favourites + chimes + browse sources.
+        """Top-level browse.
 
-        On open, send GETUI:HOME (and GETUI:PLAY for parity) so the speaker
-        pushes the current browse view through MB#42 — useful for sources
-        like Airable / USB / DMR that have nested catalogs.
+        Full browseable tree (NAS, streaming services, etc.) is not yet
+        implemented — that requires SELECTITEM-based navigation of the
+        speaker's UI tree (MB#41 SELECTITEM → MB#42 ItemList response).
+        Mapping that hierarchy reliably requires a packet capture from
+        the Lithe Audio app for reference.
+
+        For now: shows favourites the user has saved via the Lithe app.
         """
-        # Ask speaker to push its current Home view (response arrives on MB#42)
-        try:
-            await self._client.async_get_home_view()
-            # Also refresh play view in case media app needs it
-            await self._client.async_get_play_view()
-        except Exception as e:
-            _LOGGER.debug("GETUI request failed (non-fatal): %s", e)
-
         children = []
+
         # Favourites first
         for fav in self._client.state.favourites:
             children.append(BrowseMedia(
@@ -307,6 +304,17 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
                 media_content_id=f"{_FAV_PREFIX}{fav.get('slot')}",
                 media_content_type=MediaType.MUSIC,
                 can_play=True,
+                can_expand=False,
+            ))
+
+        if not children:
+            # Placeholder so the user sees something other than empty
+            children.append(BrowseMedia(
+                title="No favourites yet — save some in the Lithe Audio app",
+                media_class=MediaClass.URL,
+                media_content_id="lithe_empty",
+                media_content_type="library",
+                can_play=False,
                 can_expand=False,
             ))
 
