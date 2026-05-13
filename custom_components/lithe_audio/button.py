@@ -33,6 +33,10 @@ async def async_setup_entry(
     for slot in range(1, chime_count + 1):
         entities.append(LitheChimeButton(coordinator, entry, slot))
 
+    # Save-to-favourite buttons (slots 1-5) — press to save currently playing
+    for slot in range(1, 6):
+        entities.append(LitheSaveFavouriteButton(coordinator, entry, slot))
+
     # Diagnostics
     entities.append(LitheRebootButton(coordinator, entry))
     entities.append(LitheFactoryResetButton(coordinator, entry))
@@ -116,3 +120,35 @@ class LitheFactoryResetButton(_LitheBaseButton):
 
     async def async_press(self) -> None:
         await self._client.async_factory_reset()
+
+
+class LitheSaveFavouriteButton(ButtonEntity):
+    """Save currently-playing track to a favourite slot.
+
+    Press to save whatever is playing right now (Spotify Connect, Airable,
+    etc.) into one of the speaker's favourite slots, accessible via
+    play_favourite later.
+    """
+
+    _attr_has_entity_name = True
+    _attr_icon = "mdi:heart-plus"
+
+    def __init__(self, coordinator: LitheAudioCoordinator, entry: ConfigEntry, slot: int) -> None:
+        self._coord = coordinator
+        self._client = coordinator.client
+        self._entry = entry
+        self._slot = slot
+        self._attr_name = f"Save to Favourite {slot}"
+        self._attr_unique_id = f"{entry.data['host']}_{entry.entry_id}_save_fav_{slot}"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(identifiers={(DOMAIN, self._entry.data["host"])})
+
+    @property
+    def available(self) -> bool:
+        return self._client.state.connected
+
+    async def async_press(self) -> None:
+        _LOGGER.info("Save to favourite slot %d pressed", self._slot)
+        await self._client.async_save_favourite(self._slot)

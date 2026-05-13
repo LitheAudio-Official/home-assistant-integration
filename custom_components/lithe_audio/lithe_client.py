@@ -395,27 +395,31 @@ class LitheClient:
         """Play a saved favourite by slot (MB#70)."""
         await self._send(0x02, MB_FAVOURITES, f"FAV_PLAY:{int(slot)}")
 
+    async def async_save_favourite(self, slot: int) -> None:
+        """Save the currently-playing entry to a favourite slot (MB#70).
+
+        Per Lithe API_NEW page 23 (§5.4 Save & Resume Playback):
+            SET MB#70 "FAV_SAVE:<slot>"
+
+        The currently-active playback entry must be a valid saveable
+        source (Spotify Connect, Airable, etc.). Embedded chimes and
+        Direct URL cues cannot be saved.
+        """
+        slot = max(1, min(40, int(slot)))
+        await self._send(0x02, MB_FAVOURITES, f"FAV_SAVE:{slot}")
+        # Refresh favourite list so UI reflects the new entry
+        await asyncio.sleep(0.2)
+        await self._send(0x02, MB_FAVOURITES, "FAV_LIST")
+
     async def async_set_name(self, name: str) -> None:
         await self._send(0x02, MB_DEVICE_NAME, name)
 
     async def async_play_chime(self, chime_number: int) -> None:
         """Trigger an embedded audiocue via LUCI.
 
-        IMPORTANT — empirical behaviour on this PRO 2 firmware:
-
-        MB#80 'play N' returns SUCCESS but the audio output stays silent.
-        The MCU accepts the command, the firmware reports success, but
-        nothing reaches the speaker cone.
-
-        MB#41 PLAYITEM:DIRECT /system/usr/songN.mp3 forces the speaker to
-        switch source to Direct URL (source=17) and pump the file through
-        the standard playback pipeline. This wakes the audio path and
-        produces audible output — at the cost of briefly interrupting the
-        previous source.
-
-        Use MB#41 PLAYITEM:DIRECT for ALL 15 chimes — it's the path that
-        empirically works on this firmware. Slots 1-15 map to song1.mp3
-        through song15.mp3 in /system/usr/.
+        Method per Lithe vendor docs:
+          - Slots 1-9: MB#80 SET "play N"
+          - Slots 10-15: MB#41 SET "PLAYITEM:DIRECT:/system/usr/songN.mp3"
         """
         n = max(1, min(15, int(chime_number)))
         now = asyncio.get_event_loop().time()
@@ -428,10 +432,13 @@ class LitheClient:
             self.state.play_state, self.state.source_id,
         )
 
-        # All slots via MB#41 PLAYITEM:DIRECT — the path that actually
-        # produces audible output on this PRO 2 firmware
-        await self._send(0x02, MB_BROWSE, f"PLAYITEM:DIRECT:/system/usr/song{n}.mp3")
-        self._last_chime_mbid = MB_BROWSE
+        if n <= 9:
+            await self._send(0x02, MB_CHIME, f"play {n}")
+            self._last_chime_mbid = MB_CHIME
+        else:
+            await self._send(0x02, MB_BROWSE, f"PLAYITEM:DIRECT:/system/usr/song{n}.mp3")
+            self._last_chime_mbid = MB_BROWSE
+
         self._last_chime_time = now
 
     async def async_bluetooth(self, command: str) -> None:

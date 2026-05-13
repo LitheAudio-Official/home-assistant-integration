@@ -160,7 +160,7 @@ DSP_EQ        = 0x0A   # 0=Normal 1=Acoustic 2=Jazz 3=Pop 4=HipHop (confirmed)
 DSP_TREBLE    = 0x09   # Treble cut/boost — was incorrectly labelled OUTPUT
 DSP_NIGHTMODE = 0x0C   # 0=OFF 1=ON (confirmed working)
 DSP_LOUDNESS  = 0x0D   # PRO2: signed byte -10..+10  |  V3/iO1: 0=OFF 1=ON
-DSP_OUTPUT    = 0x0F   # 0=Stereo, 1=Mono, 2=Left, 3=Right (was labelled HIGHPASS)
+DSP_OUTPUT    = 0x0F   # 0=Mono, 1=Stereo, 2=Left, 3=Right  (verified user test)
 DSP_BALANCE   = 0x29   # signed byte -6..+6 (confirmed)
 # Speaker Tuning sub-MB unknown — 0x15 doesn't respond on this firmware.
 # Disable Tuning select until we find the right sub-MB ID.
@@ -170,7 +170,7 @@ DSP_HIGHPASS  = 0xFE   # placeholder — feature disabled
 
 EQ_PRESETS  = ["Normal", "Acoustic", "Jazz", "Pop", "Hip-Hop"]
 HP_OPTIONS  = ["OFF", "60Hz", "80Hz", "100Hz", "120Hz"]
-OUT_OPTIONS = ["Stereo", "Mono", "Left", "Right"]
+OUT_OPTIONS = ["Mono", "Stereo", "Left", "Right"]
 
 # ── Per-product chime counts ────────────────────────────────────────────────
 PRODUCT_CHIMES = {

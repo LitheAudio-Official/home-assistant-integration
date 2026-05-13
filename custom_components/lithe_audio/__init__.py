@@ -232,6 +232,10 @@ def _register_services(hass: HomeAssistant) -> None:
         slot = int(call.data.get("slot", 1))
         await _for_each(call, lambda c: c.async_play_favourite(slot))
 
+    async def svc_save_favourite(call: ServiceCall) -> None:
+        slot = int(call.data.get("slot", 1))
+        await _for_each(call, lambda c: c.async_save_favourite(slot))
+
     async def svc_set_name(call: ServiceCall) -> None:
         name = str(call.data.get("name", "")).strip()
         if not name:
@@ -279,6 +283,7 @@ def _register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(DOMAIN, "play_chime",       svc_play_chime)
     hass.services.async_register(DOMAIN, "play_url",         svc_play_url)
     hass.services.async_register(DOMAIN, "play_favourite",   svc_play_favourite)
+    hass.services.async_register(DOMAIN, "save_favourite",   svc_save_favourite)
     hass.services.async_register(DOMAIN, "set_name",         svc_set_name)
     hass.services.async_register(DOMAIN, "set_dsp_eq",       svc_set_eq)
     hass.services.async_register(DOMAIN, "set_dsp_output",   svc_set_output)

@@ -64,6 +64,28 @@ play_favourite:
           max: 99
           mode: box
 
+save_favourite:
+  name: Save Current to Favourite
+  description: >-
+    Save the currently-playing track to a favourite slot. Use the heart
+    button in the media player or call this service directly. Only works
+    for streaming sources (Spotify Connect, Airable, etc.) — embedded
+    chimes and Direct URL cues cannot be saved.
+  target:
+    entity:
+      domain: media_player
+      integration: lithe_audio
+  fields:
+    slot:
+      name: Slot
+      description: Favourite slot to save into (1-40).
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 40
+          mode: box
+
 set_name:
   name: Set Device Name
   description: Set the speaker's friendly name (visible in the Lithe app and AirPlay).
