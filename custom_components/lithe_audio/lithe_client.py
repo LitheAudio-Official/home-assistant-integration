@@ -50,6 +50,8 @@ class SpeakerState:
     artwork_url: str = ""
     duration_ms: int = 0
     is_live: bool = False  # True for radio/AirPlay streams (no SEEK)
+    shuffle: bool = False
+    repeat: str = "off"  # "off" | "all" | "one"
 
     # Bluetooth
     bt_status: str = ""
@@ -90,6 +92,12 @@ class LitheClient:
         self._buf = b""
         self._read_task: Optional[asyncio.Task] = None
         self._callbacks: list[Callable] = []
+        self._last_rx_time: float = 0.0
+        self._last_chime_time: float = 0.0
+        self._last_chime_mbid: int = 0
+        # RemoteID of "our" speaker — set on first RX. Packets from other
+        # RemoteIDs (paired peer speakers relayed through master) are filtered.
+        self._our_remote_id: int = 0
 
     # ── Connection ─────────────────────────────────────────────────────────
 
@@ -127,11 +135,30 @@ class LitheClient:
             timeout=8.0,
         )
 
-        # Enable TCP keepalive
+        # Enable TCP keepalive with aggressive timing so we detect a
+        # standby/zombie speaker fast (~10s) instead of the Linux default 2h.
         try:
             sock = self._writer.get_extra_info("socket")
             if sock:
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+                # These options aren't always supported, wrap each individually
+                try:
+                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 10)
+                except (OSError, AttributeError):
+                    pass
+                try:
+                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 3)
+                except (OSError, AttributeError):
+                    pass
+                try:
+                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
+                except (OSError, AttributeError):
+                    pass
+                # Disable Nagle so chime packets hit the wire immediately
+                try:
+                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                except (OSError, AttributeError):
+                    pass
         except Exception:
             pass
 
@@ -163,6 +190,7 @@ class LitheClient:
     async def async_disconnect(self) -> None:
         """Disconnect from speaker."""
         self.state.connected = False
+        self._our_remote_id = 0
         if self._read_task and not self._read_task.done():
             self._read_task.cancel()
         if self._writer:
@@ -218,6 +246,20 @@ class LitheClient:
     async def async_seek(self, position_ms: int) -> None:
         await self._send(0x02, MB_TRANSPORT, f"SEEK:{int(position_ms)}")
 
+    async def async_set_shuffle(self, on: bool) -> None:
+        """Toggle shuffle on/off via MB#40."""
+        await self._send(0x02, MB_TRANSPORT, "SHUFFLE:ON" if on else "SHUFFLE:OFF")
+
+    async def async_set_repeat(self, mode: str) -> None:
+        """Set repeat mode via MB#40.
+
+        mode: 'off' | 'all' | 'one'
+        Per LUCI Tech Note: REPEAT:OFF, REPEAT:ALL, REPEAT:ONE.
+        """
+        m = (mode or "off").lower()
+        cmd = {"off": "REPEAT:OFF", "all": "REPEAT:ALL", "one": "REPEAT:ONE"}.get(m, "REPEAT:OFF")
+        await self._send(0x02, MB_TRANSPORT, cmd)
+
     async def async_play_url(self, url: str) -> None:
         """Push a direct stream URL to the speaker (MB#41 DIRECT)."""
         await self._send(0x02, MB_BROWSE, f"PLAYITEM:DIRECT:{url}")
@@ -230,34 +272,57 @@ class LitheClient:
         await self._send(0x02, MB_DEVICE_NAME, name)
 
     async def async_play_chime(self, chime_number: int) -> None:
-        """Trigger an embedded audiocue.
+        """Trigger an embedded audiocue — minimum-latency path.
 
-        Per Lithe vendor docs there are two methods, both supported:
-          Method 1: MB#80 "play N"  — indexed (vendor shows examples 1-6)
-          Method 2: MB#41 "PLAYITEM:DIRECT:/system/usr/songN.mp3" — file path
+        Per Lithe vendor docs:
+          - Slots 1-9: MB#80 "play N"
+          - Slots 10-15: MB#41 "PLAYITEM:DIRECT:/system/usr/songN.mp3"
 
-        Empirically on CR443GP_3713 firmware, Method 1 reliably works for
-        slots 1-9 but the speaker doesn't audibly play 10-15 even though
-        it returns SUCCESS to the LUCI command. The vendor's documented
-        Method 1 examples only go up to "play 6", so this is consistent
-        with the indexed path being limited to single-digit slots.
-
-        For slots ≥ 10 we use Method 2 (MB#41 PLAYITEM:DIRECT) which is
-        the vendor-documented file-path approach.
-
-        Note: on this firmware, Method 2 also tends to trigger an MB#10
-        HOST MCU Playback Auth request. We deliberately do not respond
-        to MB#10 (sending MB#11 stops playback) — the unanswered auth may
-        cause the active Spotify Connect session to drop. There is no
-        clean workaround until Lithe publishes a host-info handshake.
+        No wake-up, no retry, no drain — this is the canonical wire format
+        and the speaker is supposed to respond instantly. If it doesn't,
+        that's a bug we need to identify (not patch around). Diagnostic
+        logging tells us exactly what the speaker did with each command.
         """
         n = max(1, min(15, int(chime_number)))
+
         if n <= 9:
-            # Method 1: vendor-documented indexed cue (MB#80)
-            await self._send(0x02, MB_CHIME, f"play {n}")
+            mbid = MB_CHIME
+            payload = f"play {n}".encode("utf-8")
         else:
-            # Method 2: vendor-documented file-path cue (MB#41 DIRECT)
-            await self._send(0x02, MB_BROWSE, f"PLAYITEM:DIRECT:/system/usr/song{n}.mp3")
+            mbid = MB_BROWSE
+            payload = f"PLAYITEM:DIRECT:/system/usr/song{n}.mp3".encode("utf-8")
+        pkt = struct.pack("<HBHBHH", 0xAAAA, 0x02, mbid, 0, 0x0000, len(payload)) + payload + b"\x00"
+
+        w = self._writer
+        now = asyncio.get_event_loop().time()
+        silence = now - (self._last_rx_time or 0.0)
+
+        # Diagnostic: capture exact state at moment of press
+        sock_state = "no_writer"
+        if w is not None:
+            sock_state = "closing" if w.is_closing() else "open"
+
+        _LOGGER.info(
+            "CHIME-DIAG slot=%d mbid=%d sock=%s silence_since_rx=%.1fs "
+            "connected=%s play_state=%s source=%d",
+            n, mbid, sock_state, silence,
+            self.state.connected, self.state.play_state, self.state.source_id,
+        )
+
+        if w is None or w.is_closing():
+            _LOGGER.error("CHIME-DIAG socket dead at press — packet NOT sent")
+            return
+
+        try:
+            w.write(pkt)
+        except Exception as e:
+            _LOGGER.error("CHIME-DIAG write failed: %s", e)
+            return
+
+        _LOGGER.debug("TX SET MB#%d (%d bytes): %s", mbid, len(payload), payload.decode("utf-8", "replace"))
+        # Remember when this chime was fired so the RX handler can log time-to-ack
+        self._last_chime_time = now
+        self._last_chime_mbid = mbid
 
     async def async_bluetooth(self, command: str) -> None:
         """BT command: ON / OFF / ENTPAIR / DISCONNECT."""
@@ -355,6 +420,16 @@ class LitheClient:
             if len(self._buf) < total:
                 break
 
+            # Read RemoteID — identifies which device the packet is from when
+            # multiple speakers are paired/grouped on the same LUCI connection.
+            # The MASTER speaker relays peer status with the peer's RemoteID,
+            # NOT its own. We must filter on this or our state will flip
+            # between devices on every push.
+            try:
+                remote_id = struct.unpack_from(">H", self._buf, 0)[0]
+            except struct.error:
+                remote_id = 0
+
             mbid = struct.unpack_from(">H", self._buf, 3)[0]
             payload_bytes = self._buf[10:10 + data_len]
             try:
@@ -363,6 +438,21 @@ class LitheClient:
                 payload = ""
 
             self._buf = self._buf[total:]
+            self._last_rx_time = asyncio.get_event_loop().time()
+
+            # Capture first RemoteID we observe — that's "our" speaker.
+            # Discard packets from other RemoteIDs (paired peers).
+            if self._our_remote_id == 0:
+                self._our_remote_id = remote_id
+                _LOGGER.info("Speaker RemoteID = 0x%04x", remote_id)
+            elif remote_id != self._our_remote_id:
+                _LOGGER.debug(
+                    "Discarding MB#%d from peer device RemoteID=0x%04x "
+                    "(ours=0x%04x): %s",
+                    mbid, remote_id, self._our_remote_id, payload[:80],
+                )
+                continue
+
             self._handle_push(mbid, payload)
 
     def _handle_push(self, mbid: int, payload: str) -> None:
@@ -376,7 +466,10 @@ class LitheClient:
         changed = True
 
         if mbid == MB_PLAYBACK_AUTH:
-            # HOST MCU only — NEVER respond
+            # HOST MCU only — NEVER respond (sending MB#11 stops playback)
+            if self._last_chime_time:
+                ms = (asyncio.get_event_loop().time() - self._last_chime_time) * 1000.0
+                _LOGGER.info("CHIME-DIAG MB#10 (playback auth) +%.1fms: %r", ms, payload)
             return
 
         elif mbid == MB_DEVICE_NAME:
@@ -439,12 +532,12 @@ class LitheClient:
             self._parse_favourites(payload)
 
         elif mbid == MB_CHIME:
-            # Chime response semantics on this firmware are surprisingly
-            # noisy. Empirically the speaker often sends BOTH "SUCCESS"
-            # AND "NI" back-to-back after a single command, so neither is
-            # a reliable indicator of audible playback. Just log quietly.
+            # Diagnostic: if we recently fired a chime via MB#80, log time-to-ack
             r = payload.strip()
-            if r and r.upper() not in ("SUCCESS", "NI"):
+            if self._last_chime_mbid == MB_CHIME and self._last_chime_time:
+                ack_ms = (asyncio.get_event_loop().time() - self._last_chime_time) * 1000.0
+                _LOGGER.info("CHIME-DIAG MB#80 ack in %.1fms: %r", ack_ms, r)
+            elif r and r.upper() not in ("SUCCESS", "NI"):
                 _LOGGER.debug("Chime MB#80 response: %s", r)
 
         elif mbid == MB_AUDIOCUE:
@@ -455,27 +548,18 @@ class LitheClient:
             #   FAILURE / NI   — slot empty or playback failed
             r = payload.strip()
             ru = r.upper()
-            if "START" in ru:
-                _LOGGER.info(
-                    "Audiocue starting — speaker is auto-pausing music for the chime."
-                )
-                # Optimistic state: speaker is about to fire the chime.
-                # We don't model "chime playing" as a separate state because
-                # the speaker auto-resumes; HA will see the actual play_state
-                # transitions via MB#51 pushes.
-            elif ru in ("NI", "FILE_NOT_FOUND", "FAILURE", "FAIL"):
+            # Always log MB#82 at info during diagnosis — vital signal
+            if self._last_chime_time:
+                ms = (asyncio.get_event_loop().time() - self._last_chime_time) * 1000.0
+                _LOGGER.info("CHIME-DIAG MB#82 +%.1fms: %r", ms, r)
+            else:
+                _LOGGER.info("CHIME-DIAG MB#82 (unsolicited): %r", r)
+            if ru in ("NI", "FILE_NOT_FOUND", "FAILURE", "FAIL"):
                 _LOGGER.warning(
                     "Audiocue failed: '%s'. The slot may be empty or the "
-                    "speaker is in a state that won't allow chime playback "
-                    "(e.g. mid-handoff). Try again after the current source "
-                    "has fully started, or upload audio to that slot via the "
-                    "Lithe portal/app.",
+                    "speaker is in a state that won't allow chime playback.",
                     r,
                 )
-            elif ru == "SUCCESS":
-                _LOGGER.debug("Audiocue completed successfully.")
-            else:
-                _LOGGER.debug("MB#82 audiocue notification: %s", r)
 
         elif mbid == MB_DSP:
             # Payload is binary DSP sub-packet(s). Decode for visibility.
@@ -549,6 +633,7 @@ class LitheClient:
             return ""
 
         self.state.title  = _first(
+            "TrackName", "trackname", "track_name",
             "Title", "title", "track", "Track", "TrackTitle", "track_title",
             "name", "Name", "currentTitle", "current_title", "song", "Song",
             "currentSong", "current_song",
@@ -562,12 +647,29 @@ class LitheClient:
             "currentAlbum", "current_album",
         )
 
-        # If title is empty but artist isn't, the firmware probably swapped
-        # them — many LinkPlay-derived firmwares put the track name into
-        # "Artist" when streaming from Spotify Connect. Use artist as title.
+        # Some older LinkPlay-derived firmwares swap track name into the
+        # "Artist" field for Spotify Connect. Newer Lithe firmware (this one)
+        # exposes the proper "TrackName" so we don't need the swap, but it
+        # remains as a fallback for older firmware.
         if not self.state.title and self.state.artist:
             self.state.title = self.state.artist
             self.state.artist = ""
+
+        # ── Shuffle / Repeat state (MB#42 Window CONTENTS) ────────────────
+        # Lithe firmware exposes:
+        #   "Shuffle": 0 (off) or 1 (on)
+        #   "Repeat":  0 (off), 1 (all), 2 (one)  — observed values
+        if "Shuffle" in w:
+            try:
+                self.state.shuffle = bool(int(w.get("Shuffle", 0)))
+            except (ValueError, TypeError):
+                self.state.shuffle = False
+        if "Repeat" in w:
+            try:
+                r = int(w.get("Repeat", 0))
+                self.state.repeat = {0: "off", 1: "all", 2: "one"}.get(r, "off")
+            except (ValueError, TypeError):
+                self.state.repeat = "off"
 
         # Artwork — real key on Lithe firmware (CR443GP_3713) is "CoverArtUrl"
         art = _first(
