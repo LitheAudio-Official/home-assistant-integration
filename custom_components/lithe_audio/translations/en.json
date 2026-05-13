@@ -182,8 +182,8 @@
         }
       },
       "prayer_general": {
-        "title": "Prayer Scheduler \u2014 General",
-        "description": "Set your location and calculation method. Prayer times are fetched daily from aladhan.com.",
+        "title": "Prayer Schedule \u2014 Location & defaults",
+        "description": "Set your city, country and calculation method. Prayer times are fetched daily from aladhan.com. The default URL and volume below will be used for any prayer that doesn't have its own override.",
         "data": {
           "city": "City",
           "country": "Country (ISO 2-letter)",
@@ -193,41 +193,48 @@
           "preset": "Audio preset (overrides URL if set)"
         }
       },
-      "prayer_entries": {
-        "title": "Prayer Scheduler \u2014 Per-prayer entries",
-        "description": "Tick which prayers to schedule. Each can have its own audio URL, volume and days.",
-        "data": {
-          "fajr_enabled": "Fajr \u2014 enabled",
-          "fajr_url": "Fajr \u2014 audio URL",
-          "fajr_volume": "Fajr \u2014 volume",
-          "fajr_days": "Fajr \u2014 days",
-          "dhuhr_enabled": "Dhuhr \u2014 enabled",
-          "dhuhr_url": "Dhuhr \u2014 audio URL",
-          "dhuhr_volume": "Dhuhr \u2014 volume",
-          "dhuhr_days": "Dhuhr \u2014 days",
-          "asr_enabled": "Asr \u2014 enabled",
-          "asr_url": "Asr \u2014 audio URL",
-          "asr_volume": "Asr \u2014 volume",
-          "asr_days": "Asr \u2014 days",
-          "maghrib_enabled": "Maghrib \u2014 enabled",
-          "maghrib_url": "Maghrib \u2014 audio URL",
-          "maghrib_volume": "Maghrib \u2014 volume",
-          "maghrib_days": "Maghrib \u2014 days",
-          "isha_enabled": "Isha \u2014 enabled",
-          "isha_url": "Isha \u2014 audio URL",
-          "isha_volume": "Isha \u2014 volume",
-          "isha_days": "Isha \u2014 days",
-          "fajr_preset": "Fajr \u2014 preset (overrides URL)",
-          "dhuhr_preset": "Dhuhr \u2014 preset (overrides URL)",
-          "asr_preset": "Asr \u2014 preset (overrides URL)",
-          "maghrib_preset": "Maghrib \u2014 preset (overrides URL)",
-          "isha_preset": "Isha \u2014 preset (overrides URL)"
-        }
-      },
       "prayer_disable": {
         "title": "Disable Prayer Scheduler",
-        "description": "Click Submit to disable prayer-time announcements on this speaker."
+        "description": "This stops all scheduled prayer-time announcements for this speaker. Your settings are kept and can be re-enabled later."
+      },
+      "prayer_test": {
+        "title": "Test Adhan / Quran playback",
+        "description": "Play your chosen URL on this speaker right now to verify it works. Uses the same path the scheduler uses, so if this plays, scheduled prayers will too.",
+        "data": {
+          "preset": "Preset (overrides URL if set)",
+          "url": "Audio URL",
+          "volume": "Volume (0-100)"
+        }
+      },
+      "prayer_one": {
+        "title": "Prayer Schedule \u2014 {prayer_name} ({step_num}/{step_total})",
+        "description": "Enable this prayer to schedule a daily announcement. Choose an audio preset or paste a custom URL.",
+        "data": {
+          "enabled": "Schedule this prayer",
+          "preset": "Audio preset (or use URL field)",
+          "url": "Audio URL",
+          "volume": "Volume (0-100)",
+          "days": "Days to play"
+        }
+      },
+      "prayer_view": {
+        "title": "Today's prayer schedule",
+        "description": "{summary}",
+        "data": {
+          "acknowledge": "Got it"
+        }
+      },
+      "logging": {
+        "title": "Debug logging",
+        "description": "Set the log verbosity for the lithe_audio integration. Use 'Debug' temporarily when reporting issues; switch back to 'Info' afterwards to keep logs clean.",
+        "data": {
+          "level": "Log level"
+        }
       }
+    },
+    "error": {
+      "missing_url": "Please pick a preset or enter a URL.",
+      "test_failed": "Test playback failed \u2014 check the speaker connection."
     }
   }
 }
