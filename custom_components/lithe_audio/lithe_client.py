@@ -95,9 +95,9 @@ class LitheClient:
         self._last_rx_time: float = 0.0
         self._last_chime_time: float = 0.0
         self._last_chime_mbid: int = 0
-        # RemoteID of "our" speaker — set on first RX. Packets from other
-        # RemoteIDs (paired peer speakers relayed through master) are filtered.
-        self._our_remote_id: int = 0
+        # Track every RemoteID seen on the socket for diagnostic purposes
+        # (multiple RemoteIDs can come from one speaker depending on source)
+        self._seen_remote_ids: set[int] = set()
 
     # ── Connection ─────────────────────────────────────────────────────────
 
@@ -190,7 +190,7 @@ class LitheClient:
     async def async_disconnect(self) -> None:
         """Disconnect from speaker."""
         self.state.connected = False
-        self._our_remote_id = 0
+        self._seen_remote_ids.clear()
         if self._read_task and not self._read_task.done():
             self._read_task.cancel()
         if self._writer:
@@ -309,6 +309,18 @@ class LitheClient:
             self.state.connected, self.state.play_state, self.state.source_id,
         )
 
+        # source=17 (Direct URL) means the speaker is still in the audio
+        # path of a previous chime/URL playback. Pressing a new chime now
+        # will be slow (~4s) because the firmware has to unwind that path
+        # before it can play the new cue. This is firmware behaviour, not
+        # something we can fix from the host side. Log it so the user knows.
+        if self.state.source_id == 17:
+            _LOGGER.warning(
+                "Chime: speaker is in Direct URL source — first chime will "
+                "take ~4s while the speaker's audio path resets. Subsequent "
+                "presses (once source returns to a normal source) are instant."
+            )
+
         if w is None or w.is_closing():
             _LOGGER.error("CHIME-DIAG socket dead at press — packet NOT sent")
             return
@@ -422,9 +434,12 @@ class LitheClient:
 
             # Read RemoteID — identifies which device the packet is from when
             # multiple speakers are paired/grouped on the same LUCI connection.
-            # The MASTER speaker relays peer status with the peer's RemoteID,
-            # NOT its own. We must filter on this or our state will flip
-            # between devices on every push.
+            # We DO NOT filter on it yet — empirically the same speaker emits
+            # packets with different RemoteIDs depending on the source/role
+            # (Spotify Connect responses use a different RemoteID than direct
+            # LUCI control). Hard filtering broke MB#80 responses and device
+            # info GETs. Instead we just track which RemoteIDs we've seen for
+            # diagnostic purposes.
             try:
                 remote_id = struct.unpack_from(">H", self._buf, 0)[0]
             except struct.error:
@@ -440,29 +455,29 @@ class LitheClient:
             self._buf = self._buf[total:]
             self._last_rx_time = asyncio.get_event_loop().time()
 
-            # Capture first RemoteID we observe — that's "our" speaker.
-            # Discard packets from other RemoteIDs (paired peers).
-            if self._our_remote_id == 0:
-                self._our_remote_id = remote_id
-                _LOGGER.info("Speaker RemoteID = 0x%04x", remote_id)
-            elif remote_id != self._our_remote_id:
-                _LOGGER.debug(
-                    "Discarding MB#%d from peer device RemoteID=0x%04x "
-                    "(ours=0x%04x): %s",
-                    mbid, remote_id, self._our_remote_id, payload[:80],
+            # Track RemoteIDs we see for diagnostics
+            if remote_id not in self._seen_remote_ids:
+                self._seen_remote_ids.add(remote_id)
+                _LOGGER.info(
+                    "RID-DIAG New RemoteID 0x%04x first seen on MB#%d: %s",
+                    remote_id, mbid, payload[:80],
                 )
-                continue
+
+            # Also log every packet's RemoteID at debug level so we can
+            # correlate state corruption with peer pushes
+            _LOGGER.debug(
+                "RX MB#%d (rid=0x%04x, %d bytes): %s",
+                mbid, remote_id, data_len, payload[:200],
+            )
 
             self._handle_push(mbid, payload)
 
     def _handle_push(self, mbid: int, payload: str) -> None:
-        """Handle an incoming message from the speaker."""
-        # Debug visibility of every push — invaluable for diagnosing missing
-        # state, wrong JSON keys, unexpected MB# numbers, etc.
-        if _LOGGER.isEnabledFor(logging.DEBUG):
-            preview = payload[:800] + ("…" if len(payload) > 800 else "")
-            _LOGGER.debug("RX MB#%d (%d bytes): %s", mbid, len(payload), preview)
+        """Handle an incoming message from the speaker.
 
+        Note: every RX is already logged in _process_buffer with its
+        RemoteID. We don't repeat the preview here.
+        """
         changed = True
 
         if mbid == MB_PLAYBACK_AUTH:
@@ -473,10 +488,45 @@ class LitheClient:
             return
 
         elif mbid == MB_DEVICE_NAME:
-            self.state.name = payload.strip()
+            new_name = payload.strip()
+            # The PRO 2 reports two different names on MB#90:
+            #   - Individual identity: "WiFi PRO 23503b8" (or similar)
+            #   - Group/zone name: "Kitchen Sub" (when paired/grouped)
+            # Both arrive on the same RemoteID, indistinguishable at the
+            # protocol level. Prefer the individual name (matches the
+            # speaker's hardcoded SSID-derived identity) and ignore group
+            # name overwrites to keep HA's device name stable.
+            if not self.state.name:
+                self.state.name = new_name
+            elif new_name and (
+                new_name.startswith(("WiFi ", "iO1", "LS10", "LS9", "Lithe"))
+                or new_name == self.state.name
+            ):
+                self.state.name = new_name
+            else:
+                _LOGGER.debug(
+                    "Ignoring MB#90 group-name push %r (keeping %r)",
+                    new_name, self.state.name,
+                )
 
         elif mbid == MB_FIRMWARE:
-            self.state.firmware = payload.strip()
+            new_fw = payload.strip()
+            # Same dual-response issue as MB#90: PRO 2 reports its own
+            # firmware "CR443GP_3713" and also a paired peer's firmware
+            # number "15244". Prefer the longer/CR-prefixed string.
+            if not self.state.firmware:
+                self.state.firmware = new_fw
+            elif new_fw and (
+                new_fw.startswith(("CR", "LS", "WP"))
+                or new_fw == self.state.firmware
+                or len(new_fw) > len(self.state.firmware)
+            ):
+                self.state.firmware = new_fw
+            else:
+                _LOGGER.debug(
+                    "Ignoring MB#5 peer-firmware push %r (keeping %r)",
+                    new_fw, self.state.firmware,
+                )
 
         elif mbid == MB_VOLUME:
             try:
