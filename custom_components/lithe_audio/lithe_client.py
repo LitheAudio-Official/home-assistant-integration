@@ -394,9 +394,14 @@ class LitheClient:
           - Slots 1-9: MB#80 "play N"
           - Slots 10-15: MB#41 "PLAYITEM:DIRECT:/system/usr/songN.mp3"
 
-        Uses the standard _send() path — same code as every other command.
-        No fast-path, no custom packet builder, no drain skip. If chimes
-        were broken because of fast-path cleverness, this fixes it.
+        STANDBY WAKE: when source is 0 (NoSource) the speaker's audio
+        subsystem (DAC/AMP) is in standby. The MCU stays awake to receive
+        LUCI commands and will happily ACK + SUCCESS our chime — but the
+        audio path can't physically output sound until we wake it.
+
+        Per LUCI spec §9.31, MB#70 SET STANDBYOFF wakes the speaker out
+        of standby. We send it as a prefix when source=0, then fire the
+        chime command.
         """
         n = max(1, min(15, int(chime_number)))
         now = asyncio.get_event_loop().time()
@@ -410,6 +415,19 @@ class LitheClient:
             n, sock_state, silence,
             self.state.connected, self.state.play_state, self.state.source_id,
         )
+
+        # Wake the audio subsystem out of standby if needed.
+        # source=0 means NoSource (cold standby, audio path off)
+        if self.state.source_id == 0:
+            _LOGGER.info(
+                "CHIME-DIAG source=0 (NoSource/standby) — sending STANDBYOFF "
+                "to wake audio subsystem before firing chime"
+            )
+            await self._send(0x02, MB_FAVOURITES, "STANDBYOFF")
+            # Small delay for the speaker to wake its audio path. The MCU
+            # has to bring up the DAC/AMP from low-power state which takes
+            # ~150-300ms on typical LS10 designs.
+            await asyncio.sleep(0.25)
 
         if n <= 9:
             await self._send(0x02, MB_CHIME, f"play {n}")
