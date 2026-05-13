@@ -91,6 +91,7 @@ class LitheClient:
         self._writer: Optional[asyncio.StreamWriter] = None
         self._buf = b""
         self._read_task: Optional[asyncio.Task] = None
+        self._heartbeat_task: Optional[asyncio.Task] = None
         self._callbacks: list[Callable] = []
         self._last_rx_time: float = 0.0
         self._last_chime_time: float = 0.0
@@ -181,11 +182,53 @@ class LitheClient:
         self.state.connected = True
         _LOGGER.info("Connected to Lithe Audio speaker at %s:%s", self.host, self.port)
 
-        # Start background reader
+        # Start background reader and the 30-second re-registration heartbeat.
+        # The Control4 reference driver re-registers every 30 seconds and
+        # re-queries the device name. Without this the speaker eventually
+        # demotes our session, causing chime/audio commands to be processed
+        # slowly or not at all after idle periods.
         self._read_task = asyncio.create_task(self._read_loop())
+        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
         # Request initial state
         await self.async_refresh()
+
+    async def _heartbeat_loop(self) -> None:
+        """Re-register every 30s — mirrors Control4 driver behaviour.
+
+        The speaker treats long socket silence as session demotion. To stay
+        in a fully-responsive state we re-send the registration plus a
+        device-name GET every 30 seconds, exactly like the proven Control4
+        Lua driver does.
+        """
+        try:
+            while self.state.connected and self._writer:
+                await asyncio.sleep(30.0)
+                if not self.state.connected or not self._writer or self._writer.is_closing():
+                    break
+                try:
+                    # Re-register
+                    if self.use_tls:
+                        reg = json.dumps({
+                            "APP_info": {
+                                "id": "com.litheaudio.homeassistant",
+                                "version": "1.1.0",
+                                "ip": self.local_ip,
+                            }
+                        }, separators=(",", ":"))
+                    else:
+                        reg = self.local_ip
+                    self._writer.write(self._build_packet(0x02, MB_REGISTER, reg))
+                    # Refresh device name (Control4 does this too)
+                    self._writer.write(self._build_packet(0x01, MB_DEVICE_NAME, ""))
+                    _LOGGER.debug("Heartbeat: re-registered with speaker")
+                except Exception as e:
+                    _LOGGER.debug("Heartbeat write failed: %s", e)
+                    break
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            _LOGGER.debug("Heartbeat loop ended: %s", e)
 
     async def async_disconnect(self) -> None:
         """Disconnect from speaker."""
@@ -193,6 +236,8 @@ class LitheClient:
         self._seen_remote_ids.clear()
         if self._read_task and not self._read_task.done():
             self._read_task.cancel()
+        if getattr(self, "_heartbeat_task", None) and not self._heartbeat_task.done():
+            self._heartbeat_task.cancel()
         if self._writer:
             try:
                 self._writer.close()
@@ -291,7 +336,7 @@ class LitheClient:
         else:
             mbid = MB_BROWSE
             payload = f"PLAYITEM:DIRECT:/system/usr/song{n}.mp3".encode("utf-8")
-        pkt = struct.pack("<HBHBHH", 0xAAAA, 0x02, mbid, 0, 0x0000, len(payload)) + payload
+        pkt = struct.pack("<HBHBHH", 0xAAAA, 0x02, mbid, 0, 0x0000, len(payload)) + payload + b"\x00"
 
         w = self._writer
         now = asyncio.get_event_loop().time()
@@ -360,10 +405,10 @@ class LitheClient:
             0x02,
             byte_val,
         ])
-        # DataLen counts payload bytes only
+        # DataLen counts payload bytes only — terminator is separate
         data_len = len(sub)
         header = struct.pack("<HBHBHH", 0xAAAA, 0x02, MB_DSP, 0, 0x0000, data_len)
-        pkt = header + sub  # no trailing NUL — matches Control4 reference driver
+        pkt = header + sub + b"\x00"  # terminator per vendor §10.2
         if self._writer and not self._writer.is_closing():
             _LOGGER.debug("TX DSP MB#112: sub=0x%02x(%d) val=%d", sub_mb, sub_mb, value)
             self._writer.write(pkt)
@@ -425,7 +470,13 @@ class LitheClient:
         """
         while len(self._buf) >= 10:
             try:
-                data_len = struct.unpack_from(">H", self._buf, 8)[0]
+                # Per vendor official Python example (LITHE_AUDIO_INTEGRATION_API
+                # §10.2), the RX header is ALL little-endian:
+                #   remote_id, cmd_type, mbid, status, crc, data_len = struct.unpack("<H B H B H H", packet[:10])
+                # (Earlier versions of this code used BE which works for MBs
+                # 0-255 since the high byte is 0, but breaks MB#573 timezone,
+                # high DSP sub-IDs, and any other MB > 255.)
+                data_len = struct.unpack_from("<H", self._buf, 8)[0]
             except struct.error:
                 break
             total = 10 + data_len
@@ -441,11 +492,11 @@ class LitheClient:
             # info GETs. Instead we just track which RemoteIDs we've seen for
             # diagnostic purposes.
             try:
-                remote_id = struct.unpack_from(">H", self._buf, 0)[0]
+                remote_id = struct.unpack_from("<H", self._buf, 0)[0]
             except struct.error:
                 remote_id = 0
 
-            mbid = struct.unpack_from(">H", self._buf, 3)[0]
+            mbid = struct.unpack_from("<H", self._buf, 3)[0]
             # Status byte at offset 5: per LUCI spec §4.1.1,
             #   0 = invalid/ignore (and for commands: NA)
             #   1 = Success
@@ -894,28 +945,26 @@ class LitheClient:
     def _build_packet(cmd_type: int, mbid: int, payload: str) -> bytes:
         """Build a TX packet matching the LUCI spec.
 
-        Header (10 bytes):
-            RemoteID  : 2 bytes, LE — 0xAAAA
-            CmdType   : 1 byte      — 0x01 GET, 0x02 SET
-            MBID      : 2 bytes, LE
-            Status    : 1 byte      — 0x00 (NA for commands)
-            CRC       : 2 bytes, LE — 0x0000 (LS10 has CRC disabled in firmware)
-            DataLen   : 2 bytes, LE — length of payload
-        Body:
-            Payload (UTF-8) — NO trailing NUL terminator
+        Per Lithe's official Python example (vendor docs §10.2):
 
-        CRITICAL: do NOT append a NUL byte. The spec text mentions NUL
-        termination but the reference Lithe / Libre integrations
-        (Control4 driver, Lithe app) send the payload bytes only and
-        rely on DataLen to delimit. Appending an extra NUL puts a stray
-        byte in the speaker's TCP buffer that misaligns the parser for
-        subsequent packets — causing slow / random responses on
-        time-sensitive commands like chime triggers.
+          header = struct.pack("<H B H B H H",
+              REMOTE_ID,    # 0xAAAA
+              cmd_type,     # 0x01 GET or 0x02 SET
+              mbid,
+              0x00,         # CmdStatus
+              0x0000,       # CRC
+              len(payload)) # DataLen u16 little-endian
+          sock.sendall(header + payload + b"\\x00")  # terminator
+
+        Notes:
+          - DataLen is LITTLE-endian (not BE as I mistakenly assumed)
+          - DataLen excludes the trailing terminator
+          - Terminator 0x00 IS appended after the packet
         """
         data = payload.encode("utf-8")
         data_len = len(data)
         header = struct.pack("<HBHBHH", 0xAAAA, cmd_type, mbid, 0, 0x0000, data_len)
-        return header + data
+        return header + data + b"\x00"
 
     async def _send(self, cmd_type: int, mbid: int, payload: str) -> None:
         if self._writer and not self._writer.is_closing():
@@ -969,13 +1018,13 @@ class LitheClientLS9(LitheClient):
                     buf += chunk
                     while len(buf) >= 10:
                         try:
-                            data_len = struct.unpack_from(">H", buf, 8)[0]
+                            data_len = struct.unpack_from("<H", buf, 8)[0]
                         except struct.error:
                             break
                         total = 10 + data_len
                         if len(buf) < total:
                             break
-                        r_mbid = struct.unpack_from(">H", buf, 3)[0]
+                        r_mbid = struct.unpack_from("<H", buf, 3)[0]
                         r_payload = buf[10:10 + data_len].decode("utf-8", "replace").rstrip("\x00")
                         buf = buf[total:]
                         if r_mbid != MB_PLAYBACK_AUTH:
