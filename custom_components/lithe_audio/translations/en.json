@@ -18,11 +18,11 @@
       },
       "manual": {
         "title": "Enter speaker details",
-        "description": "If you know the speaker's IP address, enter it below. Pick the matching model — TLS is enabled automatically for LS10 speakers (PRO 2, V3, iO1) using a built-in certificate.",
+        "description": "If you know the speaker's IP address, enter it below. Pick the matching model \u2014 TLS is enabled automatically for LS10 speakers (PRO 2, V3, iO1) using a built-in certificate.",
         "data": {
           "product": "Speaker model",
-          "host":    "IP address",
-          "port":    "Port (default 7777)"
+          "host": "IP address",
+          "port": "Port (default 7777)"
         }
       },
       "zeroconf_confirm": {
@@ -35,49 +35,199 @@
     },
     "error": {
       "cannot_connect": "Cannot connect to the speaker. Check the IP address and that the speaker is online.",
-      "invalid_auth":   "Authentication failed.",
-      "unknown":        "Unexpected error."
+      "invalid_auth": "Authentication failed.",
+      "unknown": "Unexpected error."
     },
     "abort": {
       "already_configured": "This speaker is already configured.",
-      "no_devices_found":   "No Lithe Audio speakers were found on the network."
+      "no_devices_found": "No Lithe Audio speakers were found on the network."
     }
   },
   "entity": {
     "button": {
-      "reboot":        { "name": "Reboot" },
-      "factory_reset": { "name": "Factory Reset" }
+      "reboot": {
+        "name": "Reboot"
+      },
+      "factory_reset": {
+        "name": "Factory Reset"
+      }
     },
     "select": {
-      "eq_preset":        { "name": "EQ Preset" },
-      "speaker_output":   { "name": "Speaker Output" },
-      "high_pass_filter": { "name": "High Pass Filter" },
-      "speaker_tuning":   { "name": "Speaker Tuning" }
+      "eq_preset": {
+        "name": "EQ Preset"
+      },
+      "speaker_output": {
+        "name": "Speaker Output"
+      },
+      "high_pass_filter": {
+        "name": "High Pass Filter"
+      },
+      "speaker_tuning": {
+        "name": "Speaker Tuning"
+      }
     },
     "number": {
-      "loudness": { "name": "Loudness" },
-      "balance":  { "name": "Balance" }
+      "loudness": {
+        "name": "Loudness"
+      },
+      "balance": {
+        "name": "Balance"
+      }
     },
     "switch": {
-      "night_mode": { "name": "Night Mode" },
-      "loudness":   { "name": "Loudness" },
-      "bluetooth":  { "name": "Bluetooth" }
+      "night_mode": {
+        "name": "Night Mode"
+      },
+      "loudness": {
+        "name": "Loudness"
+      },
+      "bluetooth": {
+        "name": "Bluetooth"
+      }
     },
     "sensor": {
-      "active_source": { "name": "Active Source" },
-      "firmware":      { "name": "Firmware" },
-      "mac_address":   { "name": "MAC Address" },
-      "wifi_band":     { "name": "Wi-Fi Band" },
-      "timezone":      { "name": "Timezone" },
-      "uptime":        { "name": "Uptime" }
+      "active_source": {
+        "name": "Active Source"
+      },
+      "firmware": {
+        "name": "Firmware"
+      },
+      "mac_address": {
+        "name": "MAC Address"
+      },
+      "wifi_band": {
+        "name": "Wi-Fi Band"
+      },
+      "timezone": {
+        "name": "Timezone"
+      },
+      "uptime": {
+        "name": "Uptime"
+      }
     }
   },
   "services": {
-    "play_chime":          { "name": "Play Chime",            "description": "Play a built-in chime." },
-    "play_url":            { "name": "Play URL",              "description": "Push a direct audio URL to the speaker." },
-    "play_favourite":      { "name": "Play Favourite",        "description": "Play a saved favourite by slot." },
-    "set_name":            { "name": "Set Name",              "description": "Set the speaker's friendly name." },
-    "play_group":          { "name": "Play to Cast Group",    "description": "Play a URL to a Cast group with synchronised LUCI volume." },
-    "set_prayer_schedule": { "name": "Set Prayer Schedule",   "description": "Schedule daily prayer-time announcements." }
+    "play_chime": {
+      "name": "Play Chime",
+      "description": "Play a built-in chime."
+    },
+    "play_url": {
+      "name": "Play URL",
+      "description": "Push a direct audio URL to the speaker."
+    },
+    "play_favourite": {
+      "name": "Play Favourite",
+      "description": "Play a saved favourite by slot."
+    },
+    "set_name": {
+      "name": "Set Name",
+      "description": "Set the speaker's friendly name."
+    },
+    "play_group": {
+      "name": "Play to Cast Group",
+      "description": "Play a URL to a Cast group with synchronised LUCI volume."
+    },
+    "set_prayer_schedule": {
+      "name": "Set Prayer Schedule",
+      "description": "Schedule daily prayer-time announcements."
+    },
+    "play_quran_juz": {
+      "name": "Play Quran (Juz)",
+      "description": "Stream a Juz of the Quran (1-30) via the tannoy flow.",
+      "fields": {
+        "juz": {
+          "name": "Juz",
+          "description": "Which Juz to play (1-30)."
+        },
+        "volume": {
+          "name": "Volume",
+          "description": "Volume 0-100."
+        }
+      }
+    },
+    "play_adhan": {
+      "name": "Play Adhan",
+      "description": "Play a preset Call-to-Prayer recording.",
+      "fields": {
+        "preset": {
+          "name": "Preset",
+          "description": "Adhan recording to play."
+        },
+        "volume": {
+          "name": "Volume",
+          "description": "Volume 0-100."
+        }
+      }
+    },
+    "save_favourite": {
+      "name": "Save Current to Favourite",
+      "description": "Save currently-playing track to favourite slot 1-40.",
+      "fields": {
+        "slot": {
+          "name": "Slot",
+          "description": "Favourite slot (1-40)."
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Lithe Audio \u2014 Configure",
+        "description": "Choose what to configure for this speaker.",
+        "menu_options": {
+          "prayer_general": "Prayer Scheduler \u2014 General settings",
+          "prayer_entries": "Prayer Scheduler \u2014 Per-prayer URLs & volumes",
+          "prayer_disable": "Disable Prayer Scheduler"
+        }
+      },
+      "prayer_general": {
+        "title": "Prayer Scheduler \u2014 General",
+        "description": "Set your location and calculation method. Prayer times are fetched daily from aladhan.com.",
+        "data": {
+          "city": "City",
+          "country": "Country (ISO 2-letter)",
+          "method": "Calculation method",
+          "default_volume": "Default announcement volume (0-100)",
+          "default_url": "Default Adhan audio URL",
+          "preset": "Audio preset (overrides URL if set)"
+        }
+      },
+      "prayer_entries": {
+        "title": "Prayer Scheduler \u2014 Per-prayer entries",
+        "description": "Tick which prayers to schedule. Each can have its own audio URL, volume and days.",
+        "data": {
+          "fajr_enabled": "Fajr \u2014 enabled",
+          "fajr_url": "Fajr \u2014 audio URL",
+          "fajr_volume": "Fajr \u2014 volume",
+          "fajr_days": "Fajr \u2014 days",
+          "dhuhr_enabled": "Dhuhr \u2014 enabled",
+          "dhuhr_url": "Dhuhr \u2014 audio URL",
+          "dhuhr_volume": "Dhuhr \u2014 volume",
+          "dhuhr_days": "Dhuhr \u2014 days",
+          "asr_enabled": "Asr \u2014 enabled",
+          "asr_url": "Asr \u2014 audio URL",
+          "asr_volume": "Asr \u2014 volume",
+          "asr_days": "Asr \u2014 days",
+          "maghrib_enabled": "Maghrib \u2014 enabled",
+          "maghrib_url": "Maghrib \u2014 audio URL",
+          "maghrib_volume": "Maghrib \u2014 volume",
+          "maghrib_days": "Maghrib \u2014 days",
+          "isha_enabled": "Isha \u2014 enabled",
+          "isha_url": "Isha \u2014 audio URL",
+          "isha_volume": "Isha \u2014 volume",
+          "isha_days": "Isha \u2014 days",
+          "fajr_preset": "Fajr \u2014 preset (overrides URL)",
+          "dhuhr_preset": "Dhuhr \u2014 preset (overrides URL)",
+          "asr_preset": "Asr \u2014 preset (overrides URL)",
+          "maghrib_preset": "Maghrib \u2014 preset (overrides URL)",
+          "isha_preset": "Isha \u2014 preset (overrides URL)"
+        }
+      },
+      "prayer_disable": {
+        "title": "Disable Prayer Scheduler",
+        "description": "Click Submit to disable prayer-time announcements on this speaker."
+      }
+    }
   }
 }
