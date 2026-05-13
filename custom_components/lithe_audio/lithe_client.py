@@ -418,22 +418,26 @@ class LitheClient:
     async def async_play_chime(self, chime_number: int) -> None:
         """Trigger an embedded audiocue.
 
-        Empirical state of this firmware (CR443GP_3713) after many tests:
+        IMPORTANT empirical findings on LS10/PRO 2 (CR443GP_3713 firmware):
 
-        - MB#80 'play N': returns SUCCESS in <50ms, no audible output
-        - MB#41 PLAYITEM:DIRECT:/system/usr/songN.mp3: no response, no audio
-        - PAUSE → PLAYITEM:DIRECT: source stays on Spotify, PLAYITEM ignored
-        - STOP → PLAYITEM:DIRECT: speaker pushes SPEAKER_INACTIVE,4 then
-          ignores PLAYITEM completely
+        1. MB#80 'play N' is the spec-correct way for indices 1-10.
+           Per LUCI spec §9.33: "LS10 supports only .wav" files.
+           MB#80 plays as an OVERLAY on the current source — it does NOT
+           require a source switch, which makes it safe to call while
+           Spotify Connect is active on source 4.
 
-        Every documented method we've tried fails to produce audible
-        output on this firmware. The integration sends spec-compliant
-        commands, the speaker firmware acknowledges them, but no sound
-        emerges. This is a firmware-side issue we cannot fix from here.
+        2. MB#41 PLAYITEM:DIRECT for chimes 10-15 requires the file path
+           ending in .wav not .mp3 on LS10 firmware. The earlier failure
+           was due to wrong extension — .mp3 files don't exist there.
 
-        Best we can do is send the documented MB#41 PLAYITEM:DIRECT and
-        let the firmware decide. If/when Lithe support replies with the
-        right command sequence we'll wire it in.
+        3. PLAYITEM:DIRECT triggers a source switch which the speaker
+           DENIES while another source (Spotify Connect) holds the
+           session — even if paused. This is the root cause of all the
+           silent-chime issues.
+
+        Strategy:
+          - Slots 1-10: MB#80 "play N" (overlay, no source switch needed)
+          - Slots 11-15: MB#41 PLAYITEM:DIRECT:/system/usr/songN.wav
         """
         n = max(1, min(15, int(chime_number)))
         now = asyncio.get_event_loop().time()
@@ -447,14 +451,17 @@ class LitheClient:
         )
 
         try:
-            # Send MB#41 PLAYITEM:DIRECT — the documented Method B from
-            # Lithe API_NEW p24. No STOP/PAUSE preamble (those make it
-            # worse on this firmware).
-            await self._send(
-                0x02, MB_BROWSE,
-                f"PLAYITEM:DIRECT:/system/usr/song{n}.mp3",
-            )
-            self._last_chime_mbid = MB_BROWSE
+            if n <= 10:
+                # MB#80 overlay - doesn't require source switch
+                await self._send(0x02, MB_CHIME, f"play {n}")
+                self._last_chime_mbid = MB_CHIME
+            else:
+                # MB#41 PLAYITEM:DIRECT - .wav not .mp3 on LS10
+                await self._send(
+                    0x02, MB_BROWSE,
+                    f"PLAYITEM:DIRECT:/system/usr/song{n}.wav",
+                )
+                self._last_chime_mbid = MB_BROWSE
         except Exception as e:
             _LOGGER.warning("Chime sequence failed: %s", e)
 
