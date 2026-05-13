@@ -10,6 +10,8 @@ import struct
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
+import aiohttp
+
 from .const import (
     DEFAULT_PORT, MB_AUDIOCUE, MB_BLUETOOTH, MB_BROWSE, MB_BT_STATUS, MB_CHIME,
     MB_DEVICE_INFO, MB_DEVICE_NAME, MB_DSP, MB_FACTORY_RESET, MB_FAVOURITES,
@@ -390,43 +392,87 @@ class LitheClient:
     async def async_play_chime(self, chime_number: int) -> None:
         """Trigger an embedded audiocue.
 
-        Per Lithe vendor docs:
-          - Slots 1-9: MB#80 "play N"
-          - Slots 10-15: MB#41 "PLAYITEM:DIRECT:/system/usr/songN.mp3"
+        OFFICIAL METHOD (per Lithe support email — what the Lithe app uses):
 
-        STANDBY WAKE: when source is 0 (NoSource) the speaker's audio
-        subsystem (DAC/AMP) is in standby. The MCU stays awake to receive
-        LUCI commands and will happily ACK + SUCCESS our chime — but the
-        audio path can't physically output sound until we wake it.
+            POST http://<speaker-ip>:81/LitheAudio
+            Content-Type: text/json
+            Body: AudioIndex:1     (for chimes 1-9 via internal slot)
+              or  AudioURL:song1.mp3  (for chimes 10-15 by filename)
 
-        Per LUCI spec §9.31, MB#70 SET STANDBYOFF wakes the speaker out
-        of standby. We send it as a prefix when source=0, then fire the
-        chime command.
+        This bypasses the LUCI protocol entirely. The HTTP handler on the
+        speaker directly invokes the audio playback subsystem, including
+        waking the DAC/AMP from standby. This is what makes the chime
+        audible — LUCI MB#80 "play N" reports SUCCESS but the audio path
+        doesn't wake up, so no sound is produced.
+
+        We try HTTP first. If it fails (network error, wrong port, older
+        firmware without the handler), fall back to LUCI MB#80 / MB#41.
         """
         n = max(1, min(15, int(chime_number)))
         now = asyncio.get_event_loop().time()
-        silence = now - (self._last_rx_time or 0.0)
         sock_state = "no_writer" if self._writer is None else (
             "closing" if self._writer.is_closing() else "open"
         )
         _LOGGER.info(
-            "CHIME-DIAG slot=%d sock=%s silence_since_rx=%.1fs "
-            "connected=%s play_state=%s source=%d",
-            n, sock_state, silence,
-            self.state.connected, self.state.play_state, self.state.source_id,
+            "CHIME-DIAG slot=%d sock=%s connected=%s play_state=%s source=%d",
+            n, sock_state, self.state.connected,
+            self.state.play_state, self.state.source_id,
         )
 
-        # Wake the audio subsystem out of standby if needed.
-        # source=0 means NoSource (cold standby, audio path off)
+        # ── PRIMARY PATH: HTTP POST to /LitheAudio on port 81 ──
+        # Chimes 1-9 use AudioIndex (firmware-internal slot mapping)
+        # Chimes 10-15 use AudioURL with the song file name
+        if n <= 9:
+            body = f"AudioIndex:{n}"
+        else:
+            body = f"AudioURL:song{n}.mp3"
+
+        url = f"http://{self.host}:81/LitheAudio"
+        headers = {"Content-Type": "text/json"}
+
+        http_success = False
+        try:
+            timeout = aiohttp.ClientTimeout(total=3.0)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(url, data=body, headers=headers) as resp:
+                    status = resp.status
+                    text = await resp.text()
+                    if status == 200:
+                        _LOGGER.info(
+                            "CHIME-DIAG HTTP POST %s body=%r → %d (%s)",
+                            url, body, status, text[:80],
+                        )
+                        http_success = True
+                    else:
+                        _LOGGER.warning(
+                            "CHIME-DIAG HTTP POST %s body=%r → %d (%s) — "
+                            "falling back to LUCI",
+                            url, body, status, text[:80],
+                        )
+        except asyncio.TimeoutError:
+            _LOGGER.warning(
+                "CHIME-DIAG HTTP POST to %s timed out — falling back to LUCI",
+                url,
+            )
+        except Exception as e:
+            _LOGGER.warning(
+                "CHIME-DIAG HTTP POST to %s failed: %s — falling back to LUCI",
+                url, e,
+            )
+
+        self._last_chime_time = now
+
+        if http_success:
+            self._last_chime_mbid = 0  # HTTP, not a LUCI MB
+            return
+
+        # ── FALLBACK: LUCI protocol path ──
+        # Wake the audio subsystem out of standby if needed
         if self.state.source_id == 0:
             _LOGGER.info(
-                "CHIME-DIAG source=0 (NoSource/standby) — sending STANDBYOFF "
-                "to wake audio subsystem before firing chime"
+                "CHIME-DIAG fallback LUCI path with source=0 — sending STANDBYOFF first"
             )
             await self._send(0x02, MB_FAVOURITES, "STANDBYOFF")
-            # Small delay for the speaker to wake its audio path. The MCU
-            # has to bring up the DAC/AMP from low-power state which takes
-            # ~150-300ms on typical LS10 designs.
             await asyncio.sleep(0.25)
 
         if n <= 9:
@@ -435,8 +481,6 @@ class LitheClient:
         else:
             await self._send(0x02, MB_BROWSE, f"PLAYITEM:DIRECT:/system/usr/song{n}.mp3")
             self._last_chime_mbid = MB_BROWSE
-
-        self._last_chime_time = now
 
     async def async_bluetooth(self, command: str) -> None:
         """BT command: ON / OFF / ENTPAIR / DISCONNECT."""
