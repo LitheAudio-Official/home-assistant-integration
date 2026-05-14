@@ -99,41 +99,72 @@ async def _do_announcement(
 ) -> None:
     """Run the duck → play → wait → restore sequence on each speaker.
 
-    Uses the existing notify.lithe_tannoy service which already handles
-    the save/restore plumbing per-host.
+    Speakers may be a mix of:
+      - Lithe IP addresses → uses notify.lithe_tannoy (LUCI protocol with
+        full save/restore)
+      - media_player.* entity IDs (e.g. Google Cast Groups) → uses HA's
+        media_player.play_media with announce:true (HA handles ducking
+        for cast-aware media players automatically)
     """
     if not speakers or not url:
         return
-    # Start the tannoy override (saves state, raises vol, plays URL)
-    try:
-        await hass.services.async_call(
-            "notify", "lithe_tannoy",
-            {
-                "message":  url,
-                "data": {
-                    "mode":     "start",
-                    "speakers": speakers,
-                    "volume":   volume,
-                },
-            },
-            blocking=True,
-        )
-    except Exception as e:
-        _LOGGER.error("Announce start failed: %s", e)
-        return
 
-    # Wait for the audio to play through. Most announcements are
-    # 3-12 seconds so we use a configurable wait.
+    lithe_ips = [s for s in speakers if not s.startswith("media_player.")]
+    media_ents = [s for s in speakers if s.startswith("media_player.")]
+
+    # Lithe LUCI path: tannoy save/restore
+    if lithe_ips:
+        try:
+            await hass.services.async_call(
+                "notify", "lithe_tannoy",
+                {
+                    "message":  url,
+                    "data": {
+                        "mode":     "start",
+                        "speakers": lithe_ips,
+                        "volume":   volume,
+                    },
+                },
+                blocking=True,
+            )
+        except Exception as e:
+            _LOGGER.error("Announce start (Lithe) failed: %s", e)
+
+    # Cast group / generic media_player path: announce:true ducks natively
+    for ent_id in media_ents:
+        try:
+            # Set volume first (some Cast targets honour this, others
+            # restore their own volume after announce:true)
+            await hass.services.async_call(
+                "media_player", "volume_set",
+                {"entity_id": ent_id, "volume_level": volume / 100.0},
+                blocking=False,
+            )
+            await hass.services.async_call(
+                "media_player", "play_media",
+                {
+                    "entity_id":          ent_id,
+                    "media_content_type": "music",
+                    "media_content_id":   url,
+                    "announce":           True,
+                },
+                blocking=False,
+            )
+            _LOGGER.info("Announce → play_media on %s: %s", ent_id, url)
+        except Exception as e:
+            _LOGGER.error("Announce on %s failed: %s", ent_id, e)
+
+    # Wait for the audio to play through
     await asyncio.sleep(wait_seconds)
 
-    # End the tannoy override (restores prior state)
-    if duck_resume:
+    # End the Lithe tannoy override (restores prior state on IP targets)
+    if duck_resume and lithe_ips:
         try:
             await hass.services.async_call(
                 "notify", "lithe_tannoy",
                 {
                     "message":  "",
-                    "data": {"mode": "end", "speakers": speakers},
+                    "data": {"mode": "end", "speakers": lithe_ips},
                 },
                 blocking=False,
             )

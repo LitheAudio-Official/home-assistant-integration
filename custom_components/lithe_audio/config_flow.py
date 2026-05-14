@@ -33,6 +33,27 @@ from .discovery import DiscoveredDevice, async_discover
 
 _LOGGER = logging.getLogger(__name__)
 
+
+def _normalize_speaker_list(value, fallback_host: str) -> list[str]:
+    """Normalize a speakers field value from the alarm/group UI.
+
+    The multi-select SelectSelector returns a list, but if a user
+    typed values manually we may get a comma-separated string. The
+    YAML config also might pass a string. Always returns a list of
+    stripped non-empty tokens.
+    """
+    if value is None or value == "":
+        return [fallback_host] if fallback_host else []
+    if isinstance(value, list):
+        return [str(s).strip() for s in value if str(s).strip()]
+    if isinstance(value, str):
+        return [s.strip() for s in value.split(",") if s.strip()]
+    # Fallback: try to coerce
+    try:
+        return [str(value).strip()] if str(value).strip() else []
+    except Exception:
+        return []
+
 PRODUCT_OPTIONS = {k: v for k, v in PRODUCT_NAMES.items()}
 
 
@@ -342,14 +363,10 @@ class LitheAudioOptionsFlow(config_entries.OptionsFlow):
         return self.async_show_menu(
             step_id="init",
             menu_options={
-                "prayer_general":   "📅  Prayer Schedule — Location & defaults",
-                "prayer_entries":   "🕋  Prayer Schedule — Per-prayer settings",
-                "prayer_test":      "▶️  Test play an Adhan / Quran URL",
-                "prayer_view":      "📋  View today's schedule",
-                "alarms":           "⏰  Alarms — view, add, edit",
-                "groups":           "🔊  Multi-room Groups — view, add, edit",
-                "logging":          "🐞  Debug logging (for support)",
-                "prayer_disable":   "✖️  Disable Prayer Scheduler",
+                "prayer":           "🕋  Prayer Schedule",
+                "alarms":           "⏰  Alarms",
+                "groups":           "🔊  Multi-room Groups",
+                "logging":          "🐞  Debug logging",
             },
         )
 
@@ -381,16 +398,43 @@ class LitheAudioOptionsFlow(config_entries.OptionsFlow):
             choices[g["id"]] = f"🔊 {name} ({n} speakers)"
         choices["__add__"] = "➕  Add new group"
 
+        # Detect Google Cast groups (configured in Google Home app) and
+        # surface them in the description so users know they don't need
+        # to build their own here.
+        try:
+            from .group import discover_cast_groups
+            cast_groups = discover_cast_groups(self.hass)
+        except Exception:
+            cast_groups = []
+
+        cast_summary = ""
+        if cast_groups:
+            cast_list = "\n".join(
+                f"  • {cg['name']} → {cg['entity_id']}" for cg in cast_groups
+            )
+            cast_summary = (
+                f"\n\nGoogle Cast groups detected ({len(cast_groups)}):\n{cast_list}"
+                "\n\nThese are configured in the Google Home app and offer "
+                "true multi-room sync. You can use them directly in "
+                "automations / alarms / the Lithe card — no need to "
+                "duplicate them here."
+            )
+
         if groups:
             description = (
-                f"You have {len(groups)} group(s). Pick one to edit/delete, "
-                "or '➕ Add new group' to create one. After adding/removing "
-                "groups, reload the Lithe Audio integration to apply changes."
+                f"You have {len(groups)} Lithe group(s). Pick one to edit/delete, "
+                "or '➕ Add new group' to create one. Lithe groups are an "
+                "application-level fan-out (each speaker streams its own copy) — "
+                "for tight multi-room sync, use Google Cast groups instead."
+                f"{cast_summary}"
             )
         else:
             description = (
-                "No groups yet. Choose '➕ Add new group' to create your first "
-                "multi-room group."
+                "Lithe groups are an application-level fan-out (each speaker "
+                "streams its own copy). For tight multi-room sync, prefer "
+                "Google Cast groups configured in the Google Home app."
+                f"{cast_summary}"
+                "\n\nChoose '➕ Add new group' to create a Lithe-side group."
             )
 
         schema = vol.Schema({
@@ -579,9 +623,9 @@ class LitheAudioOptionsFlow(config_entries.OptionsFlow):
                 "day_of_month":    int(user_input.get("day_of_month",
                                                       existing.get("day_of_month", 1))),
                 "date":            user_input.get("date", existing.get("date")),
-                "speakers":        [s.strip() for s in
-                                    (user_input.get("speakers") or my_host).split(",")
-                                    if s.strip()],
+                "speakers":        _normalize_speaker_list(
+                                       user_input.get("speakers"), my_host
+                                   ),
                 "source":          user_input.get("source", existing["source"]),
                 "preset_url":      (user_input.get("preset_url") or existing.get("preset_url","")).strip(),
                 "favourite_slot":  int(user_input.get("favourite_slot",
@@ -646,7 +690,35 @@ class LitheAudioOptionsFlow(config_entries.OptionsFlow):
                 match_preset = url
                 break
 
-        speakers_default = ", ".join(existing.get("speakers") or [my_host])
+        # Build speaker picker options. Combines:
+        #   - Lithe speakers (stored by IP, displayed by friendly name)
+        #   - Google Cast groups (stored by entity_id, multi-room sync)
+        speaker_options: list[dict[str, str]] = []
+        # Lithe speakers
+        for entry_id, entry_data in bucket.items():
+            if not isinstance(entry_data, dict):
+                continue
+            coord = entry_data.get("coordinator") or entry_data.get(DATA_COORDINATOR)
+            if coord:
+                host = coord.client.host
+                name = coord.client.state.name or host
+                speaker_options.append({
+                    "value": host,
+                    "label": f"🔊 {name} ({host})",
+                })
+        # Google Cast groups (auto-discovered)
+        try:
+            from .group import discover_cast_groups
+            for cg in discover_cast_groups(self.hass):
+                speaker_options.append({
+                    "value": cg["entity_id"],
+                    "label": f"🎶 {cg['name']} (Cast group)",
+                })
+        except Exception as e:
+            _LOGGER.debug("Cast group discovery failed: %s", e)
+
+        # Current selection (existing.speakers may be IPs or entity_ids)
+        speakers_default_list = existing.get("speakers") or [my_host]
 
         repeat_options = {
             REPEAT_ONE_OFF: "One-off (single date)",
@@ -692,7 +764,15 @@ class LitheAudioOptionsFlow(config_entries.OptionsFlow):
             vol.Optional("day_of_month", default=existing.get("day_of_month", 1)):
                 vol.All(int, vol.Range(min=1, max=31)),
             vol.Optional("date", default=existing.get("date", "") or ""): str,
-            vol.Required("speakers", default=speakers_default): str,
+            vol.Required("speakers", default=speakers_default_list):
+                selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=speaker_options,
+                        multiple=True,
+                        mode=selector.SelectSelectorMode.LIST,
+                        custom_value=True,  # allow typing in raw IPs/entity_ids
+                    )
+                ) if speaker_options else str,
             vol.Required("source", default=existing.get("source", SOURCE_PRESET)):
                 vol.In(source_options),
             vol.Optional("preset_choice", default=match_preset):
@@ -744,6 +824,166 @@ class LitheAudioOptionsFlow(config_entries.OptionsFlow):
                 "title": title_word,
                 "name":  existing.get("name", "New Alarm"),
             },
+        )
+
+    # ── Prayer Schedule — UNIFIED single-screen UI ────────────────────
+    #
+    # Replaces the 4 old steps (general/entries/test/view/disable) with
+    # one form that shows everything at once. Actions are dispatched via
+    # a single "_action" dropdown at the bottom.
+    async def async_step_prayer(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Single screen for Prayer Schedule: settings + per-prayer + actions."""
+        opts = self._draft.get("prayer", {})
+        presets = all_preset_options()
+        preset_value_to_label = {"": "— Custom (type URL below) —"}
+        for label, url in presets.items():
+            preset_value_to_label[url] = label
+
+        host = self._entry.data.get("host", "")
+
+        # Handle save / action dispatch
+        if user_input is not None:
+            action = user_input.get("_action", "save")
+
+            # Parse form values
+            chosen_preset = (user_input.get("preset") or "").strip()
+            url_field = (user_input.get("default_url") or "").strip()
+            if chosen_preset:
+                resolved_url = chosen_preset
+            elif url_field:
+                resolved_url = url_field
+            else:
+                resolved_url = _DEFAULT_ADHAN_URL
+
+            enabled_prayers = user_input.get("enabled_prayers", []) or []
+
+            # Preserve per-prayer overrides from existing config; new
+            # prayers default to the schedule defaults.
+            existing_entries = opts.get("entries", {}) or {}
+            new_entries: dict[str, dict[str, Any]] = {}
+            for p in PRAYER_NAMES_LIST:
+                if p in enabled_prayers:
+                    if p in existing_entries:
+                        # Keep existing override config — only the toggle
+                        # was relevant on this screen.
+                        new_entries[p] = existing_entries[p]
+                    else:
+                        # Create new entry inheriting current defaults
+                        new_entries[p] = {
+                            "url":    resolved_url,
+                            "volume": int(user_input.get("default_volume", _DEFAULT_VOLUME)),
+                            "days":   "daily",
+                        }
+
+            self._draft["prayer"] = {
+                **opts,
+                "enabled":        bool(user_input.get("scheduler_enabled", True)),
+                "city":           user_input.get("city", "London").strip(),
+                "country":        user_input.get("country", "GB").strip(),
+                "method":         int(user_input.get("method", 2)),
+                "default_volume": int(user_input.get("default_volume", _DEFAULT_VOLUME)),
+                "default_url":    resolved_url,
+                "entries":        new_entries,
+            }
+
+            if action == "test":
+                # Play the chosen Adhan now on this speaker
+                try:
+                    self.hass.async_create_task(
+                        self.hass.services.async_call(
+                            "notify", "lithe_tannoy",
+                            {
+                                "message": resolved_url,
+                                "data": {
+                                    "mode":     "start",
+                                    "volume":   int(user_input.get("default_volume", _DEFAULT_VOLUME)),
+                                    "speakers": [host],
+                                },
+                            },
+                            blocking=False,
+                        )
+                    )
+                    _LOGGER.info("Prayer: testing %s on %s", resolved_url, host)
+                except Exception as e:
+                    _LOGGER.error("Test failed: %s", e)
+                # Save and exit (the test plays in background)
+                return self.async_create_entry(title="", data=self._draft)
+
+            if action == "advanced":
+                # Drill into per-prayer overrides wizard
+                self._wizard_index = 0
+                self._wizard_entries = dict(new_entries)
+                return await self._show_prayer_step(None)
+
+            # Default: save and exit
+            return self.async_create_entry(title="", data=self._draft)
+
+        # ── Render the form ────────────────────────────────────────────
+
+        current_url = opts.get("default_url", _DEFAULT_ADHAN_URL)
+        matching_preset = ""
+        for url in presets.values():
+            if url == current_url:
+                matching_preset = url
+                break
+
+        existing_entries = opts.get("entries", {}) or {}
+        enabled_now = [p for p in PRAYER_NAMES_LIST if p in existing_entries]
+
+        # Build today's prayer-time summary text shown above the form
+        prayer_state = self.hass.data.get(DOMAIN, {}).get("prayer", {}) or {}
+        times: dict[str, str] = prayer_state.get("times", {}) or {}
+        if times:
+            parts = []
+            for p in PRAYER_NAMES_LIST:
+                t = times.get(p, "—")
+                marker = "✅" if p in existing_entries else "⚪"
+                parts.append(f"{marker} {p.capitalize()} {t}")
+            schedule_summary = "Today: " + " · ".join(parts)
+        else:
+            schedule_summary = "Save once to fetch today's times for your city."
+
+        schema = vol.Schema({
+            vol.Required("scheduler_enabled",
+                        default=bool(opts.get("enabled", True))): bool,
+            vol.Required("city",    default=opts.get("city", "London")): str,
+            vol.Required("country", default=opts.get("country", "GB")): str,
+            vol.Required("method",  default=opts.get("method", 2)): vol.In(CALC_METHODS),
+            vol.Required("default_volume",
+                        default=opts.get("default_volume", _DEFAULT_VOLUME)):
+                vol.All(int, vol.Range(min=0, max=100)),
+            vol.Optional("preset", default=matching_preset):
+                vol.In(preset_value_to_label),
+            vol.Optional("default_url", default=current_url): str,
+            vol.Optional("enabled_prayers", default=enabled_now):
+                selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            {"value": "fajr",    "label": "Fajr (Pre-dawn)"},
+                            {"value": "sunrise", "label": "Sunrise (Shuruq) — optional"},
+                            {"value": "dhuhr",   "label": "Dhuhr (Midday)"},
+                            {"value": "asr",     "label": "Asr (Afternoon)"},
+                            {"value": "sunset",  "label": "Sunset — optional"},
+                            {"value": "maghrib", "label": "Maghrib"},
+                            {"value": "isha",    "label": "Isha (Night)"},
+                        ],
+                        multiple=True,
+                        mode=selector.SelectSelectorMode.LIST,
+                    )
+                ),
+            vol.Required("_action", default="save"): vol.In({
+                "save":     "💾  Save",
+                "test":     "▶️  Save + Test Adhan now",
+                "advanced": "⚙️  Save + Per-prayer overrides…",
+            }),
+        })
+
+        return self.async_show_form(
+            step_id="prayer",
+            data_schema=schema,
+            description_placeholders={"summary": schedule_summary},
         )
 
     # ── Step 2: General (city/country/method/volume/enable) ────────────

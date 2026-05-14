@@ -43,6 +43,34 @@ class LitheAudioCard extends HTMLElement {
     this._render();
   }
 
+  // Tell HA which entity to use as a sensible default when the card is
+  // added from the picker. HA picks the first Lithe Audio media_player
+  // entity it finds — no manual config required.
+  static getStubConfig(hass, entities, entitiesFallback) {
+    // Prefer a Lithe Audio media_player. Detect by looking for the
+    // common attribute set this integration exposes (`product`, `firmware`,
+    // `favourites`). Falls back to any media_player.
+    if (hass && hass.states) {
+      for (const eid of Object.keys(hass.states)) {
+        if (!eid.startsWith('media_player.')) continue;
+        const attrs = hass.states[eid].attributes || {};
+        if ('favourites' in attrs && 'firmware' in attrs) {
+          return { entity: eid };
+        }
+      }
+      // Fallback: first media_player entity
+      for (const eid of Object.keys(hass.states)) {
+        if (eid.startsWith('media_player.')) return { entity: eid };
+      }
+    }
+    return { entity: '' };
+  }
+
+  // Tell HA to use our custom editor (defined below) for the visual UI
+  static getConfigElement() {
+    return document.createElement('lithe-audio-card-editor');
+  }
+
   set hass(hass) {
     this._hass = hass;
     this._render();
@@ -444,13 +472,139 @@ class LitheAudioCard extends HTMLElement {
 
 customElements.define('lithe-audio-card', LitheAudioCard);
 
-// Tell HA's Lovelace card picker about us
+
+// ── Visual Editor (GUI form for the card's config) ────────────────────
+//
+// HA shows this when the user clicks "Edit Card" or adds the card from
+// the picker. It's a plain HTMLElement that emits 'config-changed' events
+// when the user changes anything.
+
+class LitheAudioCardEditor extends HTMLElement {
+  constructor() {
+    super();
+    this._config = {};
+    this._hass = null;
+  }
+
+  setConfig(config) {
+    this._config = config || {};
+    this._render();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    this._render();
+  }
+
+  _render() {
+    if (!this._hass) return;
+
+    // Build dropdown of all media_player entities
+    const mediaPlayers = Object.keys(this._hass.states)
+      .filter(eid => eid.startsWith('media_player.'))
+      .sort();
+
+    const c = this._config;
+    this.innerHTML = `
+      <div style="display:flex; flex-direction:column; gap:12px; padding:8px;">
+        <ha-selector
+          .hass=${'${this._hass}'}
+          .label=${'"Speaker (media_player entity)"'}
+          .value=${'"' + (c.entity || '') + '"'}
+          .selector=${'${{entity: {domain: "media_player"}}}'}
+        ></ha-selector>
+
+        <div>
+          <label style="display:block;font-size:12px;opacity:0.7;margin-bottom:4px;">
+            Speaker (media_player entity)
+          </label>
+          <select id="entity" style="width:100%;padding:8px;">
+            ${mediaPlayers.map(eid => {
+              const friendly = this._hass.states[eid].attributes.friendly_name || eid;
+              const sel = eid === c.entity ? 'selected' : '';
+              return `<option value="${eid}" ${sel}>${friendly} (${eid})</option>`;
+            }).join('')}
+          </select>
+        </div>
+
+        <div>
+          <label style="display:block;font-size:12px;opacity:0.7;margin-bottom:4px;">
+            Card name (optional override)
+          </label>
+          <input id="name" type="text" value="${c.name || ''}"
+                 placeholder="e.g. Kitchen Speaker"
+                 style="width:100%;padding:8px;box-sizing:border-box;" />
+        </div>
+
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+          <input id="show_artwork" type="checkbox"
+                 ${c.show_artwork !== false ? 'checked' : ''} />
+          <span>Show artwork thumbnail</span>
+        </label>
+
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+          <input id="show_quick_volumes" type="checkbox"
+                 ${c.show_quick_volumes !== false ? 'checked' : ''} />
+          <span>Show quick volume buttons (0/20/40/60/80/100%)</span>
+        </label>
+
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+          <input id="show_favourites" type="checkbox"
+                 ${c.show_favourites !== false ? 'checked' : ''} />
+          <span>Show 9 favourite slots</span>
+        </label>
+
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+          <input id="show_source" type="checkbox"
+                 ${c.show_source !== false ? 'checked' : ''} />
+          <span>Show source switcher dropdown</span>
+        </label>
+      </div>
+    `;
+
+    // Wire all inputs to emit config-changed
+    const fire = () => {
+      const newConfig = {
+        type: 'custom:lithe-audio-card',
+        entity:             this.querySelector('#entity').value,
+        name:               this.querySelector('#name').value || undefined,
+        show_artwork:       this.querySelector('#show_artwork').checked,
+        show_quick_volumes: this.querySelector('#show_quick_volumes').checked,
+        show_favourites:    this.querySelector('#show_favourites').checked,
+        show_source:        this.querySelector('#show_source').checked,
+      };
+      // Strip undefined fields for cleaner YAML
+      Object.keys(newConfig).forEach(k =>
+        newConfig[k] === undefined && delete newConfig[k]
+      );
+      const event = new CustomEvent('config-changed', {
+        bubbles: true, composed: true,
+        detail: { config: newConfig },
+      });
+      this.dispatchEvent(event);
+    };
+
+    this.querySelector('#entity').addEventListener('change', fire);
+    this.querySelector('#name').addEventListener('input', fire);
+    ['#show_artwork', '#show_quick_volumes',
+     '#show_favourites', '#show_source'].forEach(sel => {
+      this.querySelector(sel).addEventListener('change', fire);
+    });
+  }
+}
+
+customElements.define('lithe-audio-card-editor', LitheAudioCardEditor);
+
+
+// ── Register with HA's card picker ────────────────────────────────────
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: 'lithe-audio-card',
-  name: 'Lithe Audio Card',
+  name: 'Lithe Audio',
   description: 'Branded media controller for Lithe Audio speakers',
-  preview: false,
+  // preview: true makes HA render a thumbnail in the card picker
+  preview: true,
+  documentationURL: 'https://github.com/LitheAudio-Official/home-assistant-integration',
 });
 
 console.info(

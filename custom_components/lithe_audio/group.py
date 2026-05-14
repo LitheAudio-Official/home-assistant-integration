@@ -139,6 +139,42 @@ async def async_setup_group_manager(hass: HomeAssistant) -> LitheGroupManager:
     return mgr
 
 
+# ── Google Cast group discovery ────────────────────────────────────────
+
+def discover_cast_groups(hass: HomeAssistant) -> list[dict[str, Any]]:
+    """Return a list of all Google Cast Group media_player entities in HA.
+
+    The Google Cast integration creates one media_player.* entity per
+    cast group configured in the Google Home app. We identify them by:
+      - integration == 'cast' in the device registry
+      - device.model == 'Google Cast Group'
+
+    Returns: [{"entity_id": "...", "name": "...", "device_id": "..."}, ...]
+    """
+    try:
+        from homeassistant.helpers import device_registry as dr, entity_registry as er
+    except ImportError:
+        return []
+
+    dev_reg = dr.async_get(hass)
+    ent_reg = er.async_get(hass)
+
+    cast_groups: list[dict[str, Any]] = []
+    for device in dev_reg.devices.values():
+        if device.model != "Google Cast Group":
+            continue
+        # Find the media_player entity attached to this device
+        for entry in er.async_entries_for_device(ent_reg, device.id):
+            if entry.entity_id.startswith("media_player."):
+                cast_groups.append({
+                    "entity_id": entry.entity_id,
+                    "name":      device.name_by_user or device.name or entry.entity_id,
+                    "device_id": device.id,
+                })
+                break
+    return cast_groups
+
+
 # ── Group media_player entity ──────────────────────────────────────────
 
 class LitheGroupMediaPlayer(MediaPlayerEntity):

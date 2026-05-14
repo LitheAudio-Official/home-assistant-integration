@@ -286,6 +286,21 @@
           "default_volume": "Default volume (0-100)",
           "_action": "Action"
         }
+      },
+      "prayer": {
+        "title": "Prayer Schedule",
+        "description": "{summary}\n\nConfigure your location, calculation method, default Adhan, and which prayers to schedule. Pick an action below.",
+        "data": {
+          "scheduler_enabled": "Enable prayer scheduler",
+          "city": "City",
+          "country": "Country code (e.g. GB, US, SA, EG)",
+          "method": "Calculation method",
+          "default_volume": "Default volume (0-100)",
+          "preset": "Adhan preset",
+          "default_url": "Custom URL (used if no preset selected)",
+          "enabled_prayers": "Prayers to schedule",
+          "_action": "Action"
+        }
       }
     },
     "error": {

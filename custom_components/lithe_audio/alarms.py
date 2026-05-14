@@ -416,17 +416,27 @@ class LitheAlarmManager:
         elif source == SOURCE_FAVOURITE:
             favourite_slot = int(alarm.get("favourite_slot", 1))
 
-        # Resolve coordinators
+        # Resolve targets. `speakers` may contain:
+        #   - Lithe IP addresses → use LUCI protocol directly
+        #   - media_player.* entity IDs → use HA's media_player service
+        #     (this handles Google Cast Groups, where group_entity is the
+        #     synchronized multi-room target)
         bucket = self.hass.data.get(DOMAIN, {})
         coords = []
-        for entry_id, entry_data in bucket.items():
-            if not isinstance(entry_data, dict):
+        media_player_entities: list[str] = []
+        for target in speakers:
+            if target.startswith("media_player."):
+                media_player_entities.append(target)
                 continue
-            coord = entry_data.get("coordinator")
-            if coord and coord.client.host in speakers:
-                coords.append(coord)
+            for entry_id, entry_data in bucket.items():
+                if not isinstance(entry_data, dict):
+                    continue
+                coord = entry_data.get("coordinator")
+                if coord and coord.client.host == target:
+                    coords.append(coord)
+                    break
 
-        if not coords:
+        if not coords and not media_player_entities:
             _LOGGER.warning(
                 "Alarm %s — no matching speakers connected (wanted: %s)",
                 alarm.get("id"), speakers,
@@ -440,8 +450,17 @@ class LitheAlarmManager:
                 await c.client.async_set_volume(start_vol)
             except Exception as e:
                 _LOGGER.warning("Volume set failed on %s: %s", c.client.host, e)
+        for ent_id in media_player_entities:
+            try:
+                await self.hass.services.async_call(
+                    "media_player", "volume_set",
+                    {"entity_id": ent_id, "volume_level": start_vol / 100.0},
+                    blocking=False,
+                )
+            except Exception as e:
+                _LOGGER.warning("Volume set failed on %s: %s", ent_id, e)
 
-        # Trigger playback
+        # Trigger playback on Lithe coordinators (direct LUCI)
         for c in coords:
             try:
                 if url:
@@ -453,8 +472,34 @@ class LitheAlarmManager:
             except Exception as e:
                 _LOGGER.error("Play failed on %s: %s", c.client.host, e)
 
-        # Fade in if requested
-        if fade_seconds > 0 and volume > 0:
+        # Trigger playback on media_player entities (incl. Cast groups)
+        # via HA's media_player.play_media. Note: chime / favourite-slot
+        # sources only work via LUCI, so they're skipped for Cast targets.
+        for ent_id in media_player_entities:
+            if not url:
+                _LOGGER.warning(
+                    "Alarm %s targets cast/media_player entity %s but source "
+                    "is %r — only URL sources work via Cast. Skipping.",
+                    alarm.get("id"), ent_id, source,
+                )
+                continue
+            try:
+                await self.hass.services.async_call(
+                    "media_player", "play_media",
+                    {
+                        "entity_id":            ent_id,
+                        "media_content_type":   "music",
+                        "media_content_id":     url,
+                    },
+                    blocking=False,
+                )
+                _LOGGER.info("Alarm %s → play_media on %s: %s",
+                             alarm.get("id"), ent_id, url)
+            except Exception as e:
+                _LOGGER.error("Play failed on %s: %s", ent_id, e)
+
+        # Fade in if requested (Lithe LUCI targets only; Cast handles its own volume)
+        if fade_seconds > 0 and volume > 0 and coords:
             task = self.hass.async_create_task(
                 self._fade_volume(coords, 0, volume, fade_seconds, alarm.get("id"))
             )
