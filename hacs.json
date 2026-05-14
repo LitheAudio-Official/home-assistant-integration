@@ -1,7 +1,9 @@
 {
   "name": "Lithe Audio",
-  "description": "Full local control of Lithe Audio WiFi speakers — PRO 2, V3, iO1, V2, PRO, Micro Sub. Media player, DSP/EQ, chimes, Bluetooth, favourites, tannoy/PA override, prayer scheduler, Cast group casting.",
+  "description": "Local control of Lithe Audio Wi-Fi speakers — media player, multi-room groups, alarms, Prayer Scheduler, DSP/EQ, chimes, favourites, Bluetooth. No cloud.",
   "render_readme": true,
   "homeassistant": "2024.1.0",
-  "hacs": "1.32.0"
+  "hacs": "1.32.0",
+  "country": ["GB", "US"],
+  "iot_class": "Local Push"
 }
