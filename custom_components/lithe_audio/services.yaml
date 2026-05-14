@@ -1011,3 +1011,78 @@ doorbell:
       required: false
       selector:
         text:
+
+# ── HA-side Local Favourites ───────────────────────────────────────────────
+#
+# These services manage Home Assistant-stored favourites that work for
+# ANY playable URL (including Direct URL streams that the speaker's
+# native MB#70 FAV_SAVE refuses with GENERIC_FAV_SAVE_FAIL).
+
+fav_save:
+  name: Save HA Favourite
+  description: >-
+    Save the currently-playing URL to a local HA-side favourite slot.
+    Works for any source including Direct URL streams. If url is
+    omitted, captures the current playback URL from the target speaker.
+  target:
+    entity:
+      domain: media_player
+      integration: lithe_audio
+  fields:
+    slot:
+      name: Slot
+      description: Slot 1-9. Leave 0 to auto-pick the next free slot.
+      required: false
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 9
+          mode: box
+    name:
+      name: Name
+      description: Friendly name shown in Browse Media (e.g. "BBC Radio 4").
+      required: false
+      selector:
+        text:
+    url:
+      name: URL
+      description: Audio URL to save. If omitted, captures current playback URL.
+      required: false
+      selector:
+        text:
+
+fav_play:
+  name: Play HA Favourite
+  description: Play a saved HA-side favourite by slot number.
+  target:
+    entity:
+      domain: media_player
+      integration: lithe_audio
+  fields:
+    slot:
+      name: Slot
+      required: true
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 9
+          mode: box
+
+fav_delete:
+  name: Delete HA Favourite
+  description: Remove a saved HA-side favourite from a slot.
+  fields:
+    slot:
+      name: Slot
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 9
+          mode: box
+
+fav_list:
+  name: List HA Favourites
+  description: Returns all 9 favourite slots and their current contents.

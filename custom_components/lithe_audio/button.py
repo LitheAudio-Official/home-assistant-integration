@@ -190,20 +190,56 @@ class LitheHeartButton(ButtonEntity):
         return self._client.state.connected
 
     def _next_free_slot(self) -> int:
-        """Find next free favourite slot (1-9). Wraps around after 9."""
-        used = {f.get("slot") for f in self._client.state.favourites if f.get("slot")}
-        for slot in range(1, 10):
-            if slot not in used:
-                return slot
-        # All 9 slots full — overwrite slot 1 (or the next round-robin slot)
-        # We keep a private counter for round-robin past-full behaviour.
-        last = getattr(self._client, "_heart_last_slot", 0)
-        next_slot = (last % 9) + 1
-        self._client._heart_last_slot = next_slot  # type: ignore[attr-defined]
-        return next_slot
+        """Find next free favourite slot (1-9). Wraps around after 9.
+
+        Uses HA-side favourites (not the speaker's MB#70 list) so the
+        slot picker works even when nothing has been saved natively yet.
+        """
+        from .local_favs import get_local_favs
+        mgr = get_local_favs(self.hass)
+        if mgr is None:
+            return 1
+        return mgr.next_free_slot()
 
     async def async_press(self) -> None:
+        # Use HA-side favourites (works for any URL including Direct URL,
+        # which the speaker's MB#70 FAV_SAVE rejects with GENERIC_FAV_SAVE_FAIL).
+        from .local_favs import get_local_favs
+        mgr = get_local_favs(self.hass)
+        if mgr is None:
+            _LOGGER.warning("Heart button: local favourites manager not initialised")
+            return
+
         slot = self._next_free_slot()
-        _LOGGER.info("Heart pressed — saving current track to favourite slot %d", slot)
-        await self._client.async_save_favourite(slot)
+        # Capture URL + name from current playback state
+        s = self._client.state
+        url = s.last_played_url or ""
+        name = s.title or ""
+        if not name and url:
+            from urllib.parse import urlparse
+            name = urlparse(url).path.rsplit("/", 1)[-1]
+            if "." in name:
+                name = name.rsplit(".", 1)[0]
+        if not name:
+            name = f"Favourite {slot}"
+
+        if not url:
+            _LOGGER.warning(
+                "Heart pressed but no URL is currently playing on %s — "
+                "cannot save. Try playing a track first.",
+                self._client.host,
+            )
+            return
+
+        _LOGGER.info(
+            "Heart pressed — saving slot %d: %r → %s",
+            slot, name, url,
+        )
+        await mgr.async_set(slot, name, url)
+        # Also try the native MB#70 save for completeness (will fail for
+        # Direct URL but works for Spotify/AirPlay sources).
+        try:
+            await self._client.async_save_favourite(slot)
+        except Exception:
+            pass
         self._client._heart_last_slot = slot  # type: ignore[attr-defined]

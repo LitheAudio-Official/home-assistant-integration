@@ -138,6 +138,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         register_announce_services(hass)
         hass.data[DOMAIN]["_announce_registered"] = True
 
+    # Local (HA-side) favourites — works around firmware limitation
+    # where Direct URL streams cannot be saved as native favourites.
+    if "local_favs" not in hass.data.get(DOMAIN, {}):
+        from .local_favs import async_setup_local_favourites, register_local_fav_services
+        await async_setup_local_favourites(hass)
+        register_local_fav_services(hass)
+
     # Lovelace card auto-registration (idempotent, safe to call repeatedly)
     if not hass.data.get(DOMAIN, {}).get("_card_registered"):
         try:
@@ -232,6 +239,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "alarm_toggle", "alarm_snooze", "alarm_dismiss",
                 "group_create", "group_update", "group_delete",
                 "announce", "broadcast", "doorbell",
+                "fav_save", "fav_play", "fav_list", "fav_delete",
                 "set_dsp_eq", "set_dsp_output", "set_dsp_nightmode",
                 "set_dsp_highpass", "set_dsp_balance", "set_dsp_loudness",
                 "bluetooth_pair", "bluetooth_disconnect",
@@ -470,14 +478,57 @@ def _register_services(hass: HomeAssistant) -> None:
         await _for_each(call, lambda c: c.async_play_url(url))
 
     async def svc_play_favourite(call: ServiceCall) -> None:
-        # Slot may arrive as str from the dropdown (selector returns string
-        # values) or as int from YAML automations
+        """Play a saved favourite by slot number.
+
+        Prefers HA-side local favourites (works for any URL). Falls back
+        to native MB#70 PLAYFAVITEM if the slot has no local entry.
+        """
         slot = int(call.data.get("slot", 1))
+        # Try local favs first (faster, works for Direct URL streams)
+        from .local_favs import get_local_favs
+        mgr = get_local_favs(hass)
+        if mgr is not None:
+            fav = mgr.get(slot)
+            if fav and fav.get("url"):
+                _LOGGER.info("play_favourite: local slot %d → %s",
+                             slot, fav["url"])
+                await _for_each(call, lambda c: c.async_play_url(fav["url"]))
+                return
+        # Fall back to native firmware favourite
+        _LOGGER.info("play_favourite: trying native MB#70 slot %d", slot)
         await _for_each(call, lambda c: c.async_play_favourite(slot))
 
     async def svc_save_favourite(call: ServiceCall) -> None:
+        """Save current playback to a slot.
+
+        Tries HA-side local favourites first (saves the current URL).
+        Also tries the native MB#70 FAV_SAVE — that one only works for
+        streaming sources (Spotify/AirPlay/Cast), Direct URL streams
+        get GENERIC_FAV_SAVE_FAIL from firmware, which is normal.
+        """
         slot = int(call.data.get("slot", 1))
-        await _for_each(call, lambda c: c.async_save_favourite(slot))
+        from .local_favs import get_local_favs
+        mgr = get_local_favs(hass)
+
+        async def save_one(client) -> None:
+            url = client.state.last_played_url
+            name = client.state.title or ""
+            if not name and url:
+                from urllib.parse import urlparse
+                name = urlparse(url).path.rsplit("/", 1)[-1]
+                if "." in name:
+                    name = name.rsplit(".", 1)[0]
+            if not name:
+                name = f"Favourite {slot}"
+            if mgr is not None and url:
+                await mgr.async_set(slot, name, url)
+            # Also try native firmware save (silently fails for Direct URL)
+            try:
+                await client.async_save_favourite(slot)
+            except Exception:
+                pass
+
+        await _for_each(call, save_one)
 
     async def svc_set_volume_preset(call: ServiceCall) -> None:
         """Quick-pick volume 0/20/40/60/80/100."""

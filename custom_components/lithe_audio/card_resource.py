@@ -27,25 +27,45 @@ CARD_FILENAME = "lithe-audio-card.js"
 
 
 async def async_register_card(hass: HomeAssistant) -> None:
-    """Serve the card JS and register it as a Lovelace resource.
+    """Serve the card JS, icon images, and register as Lovelace resource.
 
     Safe to call multiple times — checks idempotently.
     """
     integration_dir = Path(__file__).parent
     card_path = integration_dir / CARD_FILENAME
-    if not card_path.exists():
-        _LOGGER.warning("Lithe Audio card JS not found at %s", card_path)
-        return
+    icons_dir = integration_dir / "icons"
 
-    # 1) Serve the file at /lithe_audio_card.js
-    try:
-        await hass.http.async_register_static_paths([
-            StaticPathConfig(CARD_URL, str(card_path), cache_headers=False),
-        ])
-        _LOGGER.info("Lithe Audio card served at %s", CARD_URL)
-    except Exception as e:
-        # Already registered (idempotent) — ignore
-        _LOGGER.debug("Card static path registration: %s", e)
+    # 1) Serve the card JS at /lithe_audio_card.js
+    if card_path.exists():
+        try:
+            await hass.http.async_register_static_paths([
+                StaticPathConfig(CARD_URL, str(card_path), cache_headers=False),
+            ])
+            _LOGGER.info("Lithe Audio card served at %s", CARD_URL)
+        except Exception as e:
+            _LOGGER.debug("Card static path registration: %s", e)
+
+    # 2) Serve the icon files at /lithe_audio_assets/{icon,logo}.png etc.
+    # These are used as entity_picture / device_image so the icon appears
+    # on the device card without requiring the brands repo PR.
+    if icons_dir.exists():
+        try:
+            paths = []
+            for icon_file in icons_dir.iterdir():
+                if icon_file.suffix.lower() == ".png":
+                    paths.append(StaticPathConfig(
+                        f"/lithe_audio_assets/{icon_file.name}",
+                        str(icon_file),
+                        cache_headers=True,
+                    ))
+            if paths:
+                await hass.http.async_register_static_paths(paths)
+                _LOGGER.info(
+                    "Lithe Audio icons served at /lithe_audio_assets/ "
+                    "(%d files)", len(paths),
+                )
+        except Exception as e:
+            _LOGGER.debug("Icon static path registration: %s", e)
 
     # 2) Register as Lovelace resource (so users get auto-import)
     try:

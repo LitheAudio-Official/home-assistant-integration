@@ -276,30 +276,79 @@ class LitheAudioCard extends HTMLElement {
           letter-spacing: 0.5px;
           opacity: 0.6;
           margin-bottom: 8px;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+        }
+        button.save-fav-now {
+          background: rgba(255,107,107,0.15);
+          border: 1px solid rgba(255,107,107,0.4);
+          color: #ff6b6b;
+          padding: 4px 10px;
+          border-radius: 6px;
+          font-size: 10px;
+          font-weight: 600;
+          text-transform: none;
+          letter-spacing: 0;
+          cursor: pointer;
+          display: inline-flex;
+          align-items: center;
+          gap: 3px;
+          opacity: 1;
+        }
+        button.save-fav-now:hover {
+          background: rgba(255,107,107,0.3);
+        }
+        button.save-fav-now ha-icon {
+          --mdc-icon-size: 14px;
         }
         .fav-grid {
           display: grid;
           grid-template-columns: repeat(3, 1fr);
-          gap: 4px;
+          gap: 6px;
         }
         button.fav {
-          background: rgba(255,255,255,0.05);
-          border: 1px solid rgba(255,255,255,0.1);
+          background: linear-gradient(135deg,
+            rgba(40,167,109,0.15) 0%,
+            rgba(255,255,255,0.05) 100%);
+          border: 1px solid rgba(40,167,109,0.35);
           color: #fff;
-          padding: 8px 4px;
-          border-radius: 6px;
-          font-size: 11px;
+          padding: 12px 6px;
+          border-radius: 8px;
+          font-size: 12px;
+          font-weight: 500;
           cursor: pointer;
           text-align: center;
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
+          min-height: 44px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 4px;
+          transition: all 0.15s;
         }
         button.fav:hover {
-          background: rgba(40,167,109,0.25);
+          background: linear-gradient(135deg,
+            rgba(40,167,109,0.4) 0%,
+            rgba(40,167,109,0.2) 100%);
+          border-color: var(--lithe-green);
+          transform: translateY(-1px);
+        }
+        button.fav:active {
+          transform: translateY(0);
         }
         button.fav.empty {
-          opacity: 0.4;
+          opacity: 0.35;
+          border-style: dashed;
+          font-size: 10px;
+        }
+        button.fav .fav-num {
+          font-size: 9px;
+          opacity: 0.7;
+          margin-right: 4px;
         }
         select.src {
           width: 100%;
@@ -363,12 +412,24 @@ class LitheAudioCard extends HTMLElement {
 
           ${this._config.show_favourites ? `
           <div class="section">
-            <div class="section-title">❤ Favourites</div>
+            <div class="section-title">
+              <span>❤ Favourites</span>
+              <button class="save-fav-now" data-action="heart" title="Save what's playing now">
+                <ha-icon icon="mdi:plus-circle"></ha-icon> Save current
+              </button>
+            </div>
             <div class="fav-grid">
               ${[1,2,3,4,5,6,7,8,9].map(slot => {
                 const fav = favs.find(f => f.slot === slot);
-                const label = fav ? (fav.name || `Slot ${slot}`) : `Slot ${slot}`;
-                return `<button class="fav ${fav ? '' : 'empty'}" data-slot="${slot}">${this._esc(label)}</button>`;
+                if (fav && fav.name && fav.name !== '(empty)') {
+                  return `<button class="fav" data-slot="${slot}" title="${this._esc(fav.name)}">
+                    <span class="fav-num">${slot}</span>${this._esc(fav.name)}
+                  </button>`;
+                } else {
+                  return `<button class="fav empty" data-slot="${slot}" title="Slot ${slot} is empty">
+                    <span class="fav-num">${slot}</span>(empty)
+                  </button>`;
+                }
               }).join('')}
             </div>
           </div>
@@ -424,18 +485,11 @@ class LitheAudioCard extends HTMLElement {
               { entity_id: ent, is_volume_muted: !muted });
             break;
           case 'heart':
-            // Press the speaker's "Heart" button entity if it exists.
-            const heartBtn = Object.keys(hass.states).find(eid =>
-              eid.startsWith('button.') &&
-              eid.includes('save_current_track')
-            );
-            if (heartBtn) {
-              hass.callService('button', 'press', { entity_id: heartBtn });
-            } else {
-              // Fallback: call save_favourite to slot 1
-              hass.callService('lithe_audio', 'save_favourite',
-                { entity_id: ent, slot: 1 });
-            }
+            // Use the new HA-side fav_save service — auto-picks the
+            // next free slot and captures the currently playing URL.
+            // Slot 0 = "auto-pick".
+            hass.callService('lithe_audio', 'fav_save',
+              { entity_id: ent, slot: 0 });
             break;
           case 'volume':
             const v = parseInt(e.currentTarget.value, 10);
@@ -462,7 +516,15 @@ class LitheAudioCard extends HTMLElement {
     // Favourite buttons
     root.querySelectorAll('button.fav').forEach(btn => {
       btn.addEventListener('click', () => {
+        if (btn.classList.contains('empty')) {
+          // Empty slot — save current playback to this slot instead
+          const slot = parseInt(btn.dataset.slot, 10);
+          hass.callService('lithe_audio', 'fav_save',
+            { entity_id: ent, slot: slot });
+          return;
+        }
         const slot = parseInt(btn.dataset.slot, 10);
+        // play_favourite tries HA-side local favs first, falls back to native
         hass.callService('lithe_audio', 'play_favourite',
           { entity_id: ent, slot: String(slot) });
       });

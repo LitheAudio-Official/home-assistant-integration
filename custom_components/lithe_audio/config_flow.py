@@ -889,36 +889,44 @@ class LitheAudioOptionsFlow(config_entries.OptionsFlow):
             }
 
             if action == "test":
-                # Play the chosen Adhan now on this speaker
+                # Play the chosen Adhan now on this speaker. Run it
+                # synchronously so it kicks off BEFORE we save options
+                # (saving triggers an integration reload that would kill
+                # a pending async_create_task).
                 try:
-                    self.hass.async_create_task(
-                        self.hass.services.async_call(
-                            "notify", "lithe_tannoy",
-                            {
-                                "message": resolved_url,
-                                "data": {
-                                    "mode":     "start",
-                                    "volume":   int(user_input.get("default_volume", _DEFAULT_VOLUME)),
-                                    "speakers": [host],
-                                },
+                    await self.hass.services.async_call(
+                        "notify", "lithe_tannoy",
+                        {
+                            "message": resolved_url,
+                            "data": {
+                                "mode":     "start",
+                                "volume":   int(user_input.get("default_volume", _DEFAULT_VOLUME)),
+                                "speakers": [host],
                             },
-                            blocking=False,
-                        )
+                        },
+                        blocking=True,
                     )
-                    _LOGGER.info("Prayer: testing %s on %s", resolved_url, host)
+                    _LOGGER.info("Prayer: tested %s on %s", resolved_url, host)
                 except Exception as e:
                     _LOGGER.error("Test failed: %s", e)
-                # Save and exit (the test plays in background)
-                return self.async_create_entry(title="", data=self._draft)
 
-            if action == "advanced":
+                # Don't save+reload — just re-render the same form so the
+                # user can hear the test and then pick another action.
+                # We `user_input = None` to fall through to render path.
+                user_input = None
+
+            elif action == "advanced":
                 # Drill into per-prayer overrides wizard
                 self._wizard_index = 0
                 self._wizard_entries = dict(new_entries)
                 return await self._show_prayer_step(None)
 
-            # Default: save and exit
-            return self.async_create_entry(title="", data=self._draft)
+            elif action == "save":
+                # Save and exit
+                return self.async_create_entry(title="", data=self._draft)
+            else:
+                # Unknown action — re-render the form
+                user_input = None
 
         # ── Render the form ────────────────────────────────────────────
 
