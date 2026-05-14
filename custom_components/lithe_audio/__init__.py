@@ -473,7 +473,7 @@ def _register_services(hass: HomeAssistant) -> None:
     async def svc_play_adhan(call: ServiceCall) -> None:
         """Play one of the preset Adhan recordings via the tannoy flow."""
         from .const import ADHAN_PRESETS
-        preset = call.data.get("preset", "Azan 1 — Standard")
+        preset = call.data.get("preset", "Adhan — Makkah")
         url = ADHAN_PRESETS.get(preset)
         if not url:
             _LOGGER.error("Adhan preset %r not in preset table", preset)

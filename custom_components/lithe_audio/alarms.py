@@ -66,7 +66,7 @@ def default_alarm() -> dict[str, Any]:
         "date":            None,                    # ISO date for one_off
         "speakers":        [],                      # host IPs
         "source":          SOURCE_PRESET,
-        "preset_url":      "https://www.islamcan.com/audio/adhan/azan1.mp3",
+        "preset_url":      "https://praytimes.org/audio/sunni/Adhan-Makkah.mp3",
         "favourite_slot":  1,
         "chime_slot":      1,
         "custom_url":      "",

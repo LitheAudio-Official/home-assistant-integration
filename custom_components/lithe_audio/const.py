@@ -333,50 +333,50 @@ PRAYER_NAMES = [
     "fajr", "sunrise", "dhuhr", "asr", "sunset", "maghrib", "isha", "midnight",
 ]
 
-# Common Adhan (call-to-prayer) audio URLs — chosen to match the popular
-# pre-set picker in the standalone Prayer Scheduler webapp.
+# Adhan (Call-to-Prayer) audio URLs.
+#
+# Source: praytimes.org/audio/ — a well-known Islamic prayer-times site
+# that hosts direct MP3 recordings of renowned Adhan recitations.
+#
+# Note: the previous URLs (islamcan.com/audio/adhan/azan*.mp3) used by
+# older Lithe app versions are now returning HTTP 403 — those endpoints
+# no longer allow direct streaming. The praytimes.org URLs below are
+# direct .mp3 URLs and should stream cleanly through the speaker.
 ADHAN_PRESETS: dict[str, str] = {
-    "Azan 1 — Standard":      "https://www.islamcan.com/audio/adhan/azan1.mp3",
-    "Azan 2 — Makkah":        "https://www.islamcan.com/audio/adhan/azan2.mp3",
-    "Azan 3 — Madinah":       "https://www.islamcan.com/audio/adhan/azan3.mp3",
-    "Azan 4 — Egyptian":      "https://www.islamcan.com/audio/adhan/azan4.mp3",
-    "Azan 5 — Turkish":       "https://www.islamcan.com/audio/adhan/azan5.mp3",
-    "Fajr Azan":              "https://www.islamcan.com/audio/adhan/azan6.mp3",
+    # The 6 most popular adhans (these match what the standalone
+    # Prayer Scheduler webapp also uses)
+    "Adhan — Makkah":          "https://praytimes.org/audio/sunni/Adhan-Makkah.mp3",
+    "Adhan — Madinah":         "https://praytimes.org/audio/sunni/Adhan-Madinah.mp3",
+    "Adhan — Al-Aqsa":         "https://praytimes.org/audio/sunni/Adhan-Alaqsa.mp3",
+    "Adhan — Egyptian":        "https://praytimes.org/audio/sunni/Adhan-Egypt.mp3",
+    "Adhan — Halab (Aleppo)":  "https://praytimes.org/audio/sunni/Adhan-Halab.mp3",
+    # Famous reciters
+    "Abdul Basit":             "https://praytimes.org/audio/sunni/Abdul-Basit.mp3",
+    "Abdul Ghaffar":           "https://praytimes.org/audio/sunni/Abdul-Ghaffar.mp3",
+    "Abdul Hakam":             "https://praytimes.org/audio/sunni/Abdul-Hakam.mp3",
+    "Al-Hussaini":             "https://praytimes.org/audio/sunni/Al-Hussaini.mp3",
+    "Bakir Bash":              "https://praytimes.org/audio/sunni/Bakir-Bash.mp3",
+    "Hafez":                   "https://praytimes.org/audio/sunni/Hafez.mp3",
+    "Hafiz Murad":             "https://praytimes.org/audio/sunni/Hafiz-Murad.mp3",
+    "Minshawi":                "https://praytimes.org/audio/sunni/Minshawi.mp3",
+    "Naghshbandi":             "https://praytimes.org/audio/sunni/Naghshbandi.mp3",
+    "Saber":                   "https://praytimes.org/audio/sunni/Saber.mp3",
+    "Sharif Doman":            "https://praytimes.org/audio/sunni/Sharif-Doman.mp3",
+    "Yusuf Islam (Cat Stevens)": "https://praytimes.org/audio/sunni/Yusuf-Islam.mp3",
 }
 
-# Quran — all 30 Juz, source: user-provided j.mp short links
-# (these resolve to publicly hosted MP3 recitations).
+# Quran — all 30 Juz by Sheikh Mishary Rashid Alafasy.
+#
+# Hosted on Internet Archive for long-term stability:
+#   https://archive.org/details/quran-juz-para-1-to-30-alafasy-audio-mp3-download
+#
+# Note: the original Bitly (j.mp/...) shortlinks used by older Lithe app
+# versions are now returning HTTP 403 — those shortlinks appear to have
+# been retired by Bitly. The Internet Archive URLs below resolve directly
+# to MP3 files (no redirects), which is what the speaker firmware needs.
 QURAN_JUZ: dict[int, str] = {
-    1:  "http://j.mp/2b8SiNO",
-    2:  "http://j.mp/2b8RJmQ",
-    3:  "http://j.mp/2bFSrtF",
-    4:  "http://j.mp/2b8SXi3",
-    5:  "http://j.mp/2b8RZm3",
-    6:  "http://j.mp/28MBohs",
-    7:  "http://j.mp/2bFRIZC",
-    8:  "http://j.mp/2bufF7o",
-    9:  "http://j.mp/2byr1bu",
-    10: "http://j.mp/2bHfyUH",
-    11: "http://j.mp/2bHf80y",
-    12: "http://j.mp/2bWnTby",
-    13: "http://j.mp/2bFTiKQ",
-    14: "http://j.mp/2b8SUTA",
-    15: "http://j.mp/2bFRQIM",
-    16: "http://j.mp/2b8SegG",
-    17: "http://j.mp/2brHsFz",
-    18: "http://j.mp/2b8SCfc",
-    19: "http://j.mp/2bFSq95",
-    20: "http://j.mp/2brI1zc",
-    21: "http://j.mp/2b8VcBO",
-    22: "http://j.mp/2bFRxNP",
-    23: "http://j.mp/2brItxm",
-    24: "http://j.mp/2brHKw5",
-    25: "http://j.mp/2brImlf",
-    26: "http://j.mp/2bFRHF2",
-    27: "http://j.mp/2bFRXno",
-    28: "http://j.mp/2brI3ai",
-    29: "http://j.mp/2bFRyBF",
-    30: "http://j.mp/2bFREcc",
+    juz: f"https://archive.org/download/quran-juz-para-1-to-30-alafasy-audio-mp3-download/{juz:02d}.mp3"
+    for juz in range(1, 31)
 }
 
 

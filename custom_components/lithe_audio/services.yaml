@@ -226,16 +226,27 @@ play_adhan:
       name: Adhan Preset
       description: Which Adhan recording to play.
       required: true
-      default: "Azan 1 — Standard"
+      default: "Adhan — Makkah"
       selector:
         select:
           options:
-            - "Azan 1 — Standard"
-            - "Azan 2 — Makkah"
-            - "Azan 3 — Madinah"
-            - "Azan 4 — Egyptian"
-            - "Azan 5 — Turkish"
-            - "Fajr Azan"
+            - "Adhan — Makkah"
+            - "Adhan — Madinah"
+            - "Adhan — Al-Aqsa"
+            - "Adhan — Egyptian"
+            - "Adhan — Halab (Aleppo)"
+            - "Abdul Basit"
+            - "Abdul Ghaffar"
+            - "Abdul Hakam"
+            - "Al-Hussaini"
+            - "Bakir Bash"
+            - "Hafez"
+            - "Hafiz Murad"
+            - "Minshawi"
+            - "Naghshbandi"
+            - "Saber"
+            - "Sharif Doman"
+            - "Yusuf Islam (Cat Stevens)"
     volume:
       name: Volume
       description: Playback volume (0-100).
@@ -600,7 +611,7 @@ alarm_create:
       name: Preset URL
       description: URL of an Adhan/Quran preset audio file (used when source = preset).
       required: false
-      example: "https://www.islamcan.com/audio/adhan/azan1.mp3"
+      example: "https://praytimes.org/audio/sunni/Adhan-Makkah.mp3"
       selector:
         text:
     favourite_slot:

@@ -153,7 +153,25 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
 
     @property
     def media_title(self) -> str | None:
-        return self._client.state.title or None
+        # Prefer real title from MB#42, fall back to filename of the URL
+        # we last asked the speaker to play (helps when speaker hasn't
+        # pushed metadata yet for Direct URL streams).
+        if self._client.state.title:
+            return self._client.state.title
+        url = self._client.state.last_played_url
+        if url:
+            # Strip query string, take last path segment
+            try:
+                from urllib.parse import urlparse
+                path = urlparse(url).path
+                fname = path.rsplit("/", 1)[-1] or url
+                # Strip extension for prettiness
+                if "." in fname:
+                    fname = fname.rsplit(".", 1)[0]
+                return fname or None
+            except Exception:
+                return url
+        return None
 
     @property
     def media_artist(self) -> str | None:
@@ -207,18 +225,31 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
     def extra_state_attributes(self) -> dict[str, Any]:
         s = self._client.state
         return {
-            "product":       PRODUCT_NAMES.get(self._product, self._product),
-            "firmware":      s.firmware,
-            "mac_address":   s.mac,
-            "wifi_band":     s.wifi_band,
-            "timezone":      s.timezone,
-            "cast_version":  s.cast_version,
-            "net_mode":      s.net_mode,
-            "source_id":     s.source_id,
-            "position_ms":   s.position_ms,
-            "is_live":       s.is_live,
-            "favourites":    s.favourites,
-            "bt_status":     s.bt_status,
+            # Hardware / firmware
+            "product":         PRODUCT_NAMES.get(self._product, self._product),
+            "firmware":        s.firmware,
+            "mac_address":     s.mac,
+            "wifi_band":       s.wifi_band,
+            "timezone":        s.timezone,
+            "cast_version":    s.cast_version,
+            "net_mode":        s.net_mode,
+            # Playback state for automation triggers (e.g. when artist changes)
+            "source_id":       s.source_id,
+            "source_name":     s.source_name,
+            "position_ms":     s.position_ms,
+            "is_live":         s.is_live,
+            "title":           s.title,
+            "artist":          s.artist,
+            "album":           s.album,
+            "duration_ms":     s.duration_ms,
+            "last_played_url": s.last_played_url,
+            "volume_percent":  s.volume,           # 0-100 not 0.0-1.0
+            "shuffle":         s.shuffle,
+            "repeat":          s.repeat,
+            # Favourites — list of {slot, name} for picker UIs
+            "favourites":      s.favourites,
+            # Bluetooth
+            "bt_status":       s.bt_status,
         }
 
     # ── Commands ───────────────────────────────────────────────────────────

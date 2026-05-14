@@ -308,7 +308,7 @@ CALC_METHODS = {
 }
 
 # Defaults if user has not yet configured anything
-_DEFAULT_ADHAN_URL = "https://www.islamcan.com/audio/adhan/azan1.mp3"
+_DEFAULT_ADHAN_URL = "https://praytimes.org/audio/sunni/Adhan-Makkah.mp3"
 _DEFAULT_VOLUME = 70
 
 
@@ -582,9 +582,19 @@ class LitheAudioOptionsFlow(config_entries.OptionsFlow):
         preset_choices = {"Custom URL (use field below)": ""} | presets
 
         if user_input is not None:
-            chosen_preset = user_input.get("preset", "")
-            # If user picked a real preset, use its URL — otherwise free text
-            url = chosen_preset.strip() or user_input["default_url"].strip()
+            chosen_preset = (user_input.get("preset") or "").strip()
+            url_field = (user_input.get("default_url") or "").strip()
+            # Preset wins over URL field
+            if chosen_preset:
+                url = chosen_preset
+            elif url_field:
+                url = url_field
+            else:
+                url = _DEFAULT_ADHAN_URL
+            _LOGGER.info(
+                "Prayer general saving: preset=%r url_field=%r → resolved default_url=%r",
+                chosen_preset, url_field, url,
+            )
             self._draft["prayer"] = {
                 **opts,
                 "enabled":  True,
@@ -650,7 +660,20 @@ class LitheAudioOptionsFlow(config_entries.OptionsFlow):
             enabled = user_input.get("enabled", False)
             if enabled:
                 preset_url = (user_input.get("preset") or "").strip()
-                url = preset_url or user_input.get("url", default_url).strip()
+                url_field = (user_input.get("url") or "").strip()
+                # Preset takes priority. If user picked a preset, USE IT and
+                # ignore the URL field (HA UI can't dynamically clear the
+                # field when the dropdown changes, so we enforce it here).
+                if preset_url:
+                    url = preset_url
+                elif url_field:
+                    url = url_field
+                else:
+                    url = default_url
+                _LOGGER.info(
+                    "Prayer wizard saving %s: preset=%r url_field=%r → resolved=%r",
+                    prayer, preset_url, url_field, url,
+                )
                 self._wizard_entries[prayer] = {
                     "url":    url,
                     "volume": int(user_input.get("volume", default_volume)),

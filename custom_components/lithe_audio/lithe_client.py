@@ -63,6 +63,11 @@ class SpeakerState:
     shuffle: bool = False
     repeat: str = "off"  # "off" | "all" | "one"
 
+    # Most recent URL sent via play_url — useful as a fallback title
+    # while waiting for the speaker to push fresh MB#42 metadata after
+    # a source switch to Direct URL.
+    last_played_url: str = ""
+
     # Bluetooth
     bt_status: str = ""
 
@@ -389,8 +394,33 @@ class LitheClient:
         await self._send(0x02, MB_TRANSPORT, cmd)
 
     async def async_play_url(self, url: str) -> None:
-        """Push a direct stream URL to the speaker (MB#41 DIRECT)."""
+        """Push a direct stream URL to the speaker (MB#41 DIRECT).
+
+        After sending, schedule a metadata refresh so the HA media player
+        shows the new track info promptly. The speaker should auto-push
+        MB#42 (Now Playing) when the source switches to Direct URL, but
+        we GET it explicitly as a safety net for firmware that delays
+        the push.
+        """
         await self._send(0x02, MB_BROWSE, f"PLAYITEM:DIRECT:{url}")
+        # Store the URL so the media player can display it as a friendly
+        # title while metadata is being fetched
+        self.state.last_played_url = url
+        # Trigger several metadata refreshes — first immediate (helps if
+        # the speaker is still on the old source), then after a delay
+        # (gives MB#10/MB#11 auth flow time to complete and source to
+        # switch to 17 Direct URL).
+        async def _refresh():
+            try:
+                await asyncio.sleep(0.8)
+                await self._send(0x01, MB_NOW_PLAYING, "")  # MB#42 GET
+                await self._send(0x01, MB_SOURCE, "")        # MB#50 GET
+                await self._send(0x01, MB_PLAY_STATE, "")    # MB#51 GET
+                await asyncio.sleep(2.0)
+                await self._send(0x01, MB_NOW_PLAYING, "")  # second refresh
+            except Exception as e:
+                _LOGGER.debug("play_url metadata refresh failed: %s", e)
+        asyncio.create_task(_refresh())
 
     async def async_play_favourite(self, slot: int) -> None:
         """Play a saved favourite by slot (MB#70)."""
