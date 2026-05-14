@@ -145,6 +145,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await async_setup_local_favourites(hass)
         register_local_fav_services(hass)
 
+    # Tannoy / PA override service — register lithe_audio.tannoy AND
+    # notify.lithe_tannoy (legacy callers).
+    if not hass.data.get(DOMAIN, {}).get("_tannoy_registered"):
+        from .notify import register_tannoy_service
+        register_tannoy_service(hass)
+        hass.data[DOMAIN]["_tannoy_registered"] = True
+
     # Lovelace card auto-registration (idempotent, safe to call repeatedly)
     if not hass.data.get(DOMAIN, {}).get("_card_registered"):
         try:

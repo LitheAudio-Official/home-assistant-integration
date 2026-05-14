@@ -693,6 +693,7 @@ class LitheAudioOptionsFlow(config_entries.OptionsFlow):
         # Build speaker picker options. Combines:
         #   - Lithe speakers (stored by IP, displayed by friendly name)
         #   - Google Cast groups (stored by entity_id, multi-room sync)
+        bucket = self.hass.data.get(DOMAIN, {})
         speaker_options: list[dict[str, str]] = []
         # Lithe speakers
         for entry_id, entry_data in bucket.items():
@@ -769,8 +770,12 @@ class LitheAudioOptionsFlow(config_entries.OptionsFlow):
                     selector.SelectSelectorConfig(
                         options=speaker_options,
                         multiple=True,
-                        mode=selector.SelectSelectorMode.LIST,
-                        custom_value=True,  # allow typing in raw IPs/entity_ids
+                        # DROPDOWN mode (not LIST) — required to allow
+                        # custom_value entries, which lets users type in
+                        # raw IPs or media_player entity IDs not yet
+                        # auto-detected.
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                        custom_value=True,
                     )
                 ) if speaker_options else str,
             vol.Required("source", default=existing.get("source", SOURCE_PRESET)):
