@@ -50,7 +50,36 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator: LitheAudioCoordinator = hass.data[DOMAIN][entry.entry_id][DATA_COORDINATOR]
-    async_add_entities([LitheAudioMediaPlayer(coordinator, entry)])
+    entities: list = [LitheAudioMediaPlayer(coordinator, entry)]
+
+    # Add group media_player entities (created once across all entries).
+    # We attach to the FIRST entry that loads so groups appear in HA;
+    # subsequent entries skip the group creation.
+    if not hass.data.get(DOMAIN, {}).get("_groups_added"):
+        try:
+            from .group import get_group_manager, LitheGroupMediaPlayer
+            mgr = get_group_manager(hass)
+            if mgr:
+                groups = mgr.list_groups()
+                for g in groups:
+                    entities.append(LitheGroupMediaPlayer(hass, g))
+                hass.data[DOMAIN]["_groups_added"] = True
+                hass.data[DOMAIN]["_group_async_add_entities"] = async_add_entities
+                _LOGGER.info("Created %d Lithe group media_player entities", len(groups))
+
+                # Register listener so newly-created groups appear without restart.
+                # The manager calls listeners after add/update/delete.
+                def _on_groups_changed():
+                    # Note: HA doesn't expose a clean "remove entity" API from
+                    # the entity_platform here, so newly-added groups appear
+                    # on next reload. Deletions are handled by the entity's
+                    # `available` returning False (group_data lookup fails).
+                    _LOGGER.info("Lithe groups changed — restart required to fully apply add/remove")
+                mgr.register_listener(_on_groups_changed)
+        except Exception as e:
+            _LOGGER.error("Failed to set up group entities: %s", e)
+
+    async_add_entities(entities)
 
 
 class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlayerEntity):

@@ -332,6 +332,8 @@ class LitheAudioOptionsFlow(config_entries.OptionsFlow):
         self._wizard_entries: dict[str, dict[str, Any]] = {}
         # Alarm edit state — None means "new alarm", dict means "editing"
         self._alarm_draft: dict[str, Any] | None = None
+        # Group edit state — None means "new group", dict means "editing"
+        self._group_draft: dict[str, Any] | None = None
 
     # ── Step 1: top-level menu ─────────────────────────────────────────
     async def async_step_init(
@@ -345,8 +347,134 @@ class LitheAudioOptionsFlow(config_entries.OptionsFlow):
                 "prayer_test":      "▶️  Test play an Adhan / Quran URL",
                 "prayer_view":      "📋  View today's schedule",
                 "alarms":           "⏰  Alarms — view, add, edit",
+                "groups":           "🔊  Multi-room Groups — view, add, edit",
                 "logging":          "🐞  Debug logging (for support)",
                 "prayer_disable":   "✖️  Disable Prayer Scheduler",
+            },
+        )
+
+    # ── Groups — list existing groups + "Add new" ──────────────────────
+    async def async_step_groups(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        from .group import get_group_manager
+        mgr = get_group_manager(self.hass)
+        if not mgr:
+            return await self.async_step_init()
+
+        groups = mgr.list_groups()
+
+        if user_input is not None:
+            choice = user_input.get("choice", "")
+            if choice == "__add__":
+                self._group_draft = None
+                return await self.async_step_group_edit()
+            if choice in {g["id"] for g in groups}:
+                self._group_draft = dict(mgr.get_group(choice) or {})
+                return await self.async_step_group_edit()
+            return await self.async_step_init()
+
+        choices: dict[str, str] = {}
+        for g in groups:
+            name = g.get("name", "Group")
+            n = len(g.get("members", []) or [])
+            choices[g["id"]] = f"🔊 {name} ({n} speakers)"
+        choices["__add__"] = "➕  Add new group"
+
+        if groups:
+            description = (
+                f"You have {len(groups)} group(s). Pick one to edit/delete, "
+                "or '➕ Add new group' to create one. After adding/removing "
+                "groups, reload the Lithe Audio integration to apply changes."
+            )
+        else:
+            description = (
+                "No groups yet. Choose '➕ Add new group' to create your first "
+                "multi-room group."
+            )
+
+        schema = vol.Schema({
+            vol.Required("choice", default="__add__"): vol.In(choices),
+        })
+        return self.async_show_form(
+            step_id="groups",
+            data_schema=schema,
+            description_placeholders={"summary": description},
+        )
+
+    async def async_step_group_edit(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        from .group import get_group_manager
+        from .const import DATA_COORDINATOR
+        mgr = get_group_manager(self.hass)
+        if not mgr:
+            return await self.async_step_init()
+
+        editing = self._group_draft is not None
+        existing = self._group_draft if editing else {
+            "name": "New Group", "members": [], "default_volume": 50,
+        }
+
+        # Build list of all known Lithe speakers for the picker
+        bucket = self.hass.data.get(DOMAIN, {})
+        all_speakers: dict[str, str] = {}
+        for entry_id, entry_data in bucket.items():
+            if not isinstance(entry_data, dict):
+                continue
+            coord = entry_data.get("coordinator") or entry_data.get(DATA_COORDINATOR)
+            if coord:
+                host = coord.client.host
+                name = coord.client.state.name or host
+                all_speakers[host] = f"{name} ({host})"
+
+        # Handle delete
+        if user_input is not None and user_input.get("_action") == "delete":
+            if editing and existing.get("id"):
+                await mgr.async_delete_group(existing["id"])
+            return await self.async_step_groups()
+
+        # Handle save
+        if user_input is not None and user_input.get("_action") != "delete":
+            members = user_input.get("members", []) or []
+            patch = {
+                "name":           (user_input.get("name") or "Group").strip(),
+                "members":        list(members),
+                "default_volume": int(user_input.get("default_volume", 50)),
+            }
+            if editing:
+                await mgr.async_update_group(existing["id"], patch)
+            else:
+                await mgr.async_add_group(patch)
+            return await self.async_step_groups()
+
+        # Render form
+        action_options = {"save": "💾  Save"}
+        if editing:
+            action_options["delete"] = "🗑  Delete this group"
+
+        schema = vol.Schema({
+            vol.Required("name", default=existing.get("name", "New Group")): str,
+            vol.Required("members", default=existing.get("members", [])):
+                selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            {"value": ip, "label": label}
+                            for ip, label in all_speakers.items()
+                        ],
+                        multiple=True,
+                        mode=selector.SelectSelectorMode.LIST,
+                    )
+                ) if all_speakers else str,
+            vol.Required("default_volume", default=existing.get("default_volume", 50)):
+                vol.All(int, vol.Range(min=0, max=100)),
+            vol.Required("_action", default="save"): vol.In(action_options),
+        })
+        return self.async_show_form(
+            step_id="group_edit",
+            data_schema=schema,
+            description_placeholders={
+                "title": "Edit Group" if editing else "New Group",
             },
         )
 
@@ -467,6 +595,26 @@ class LitheAudioOptionsFlow(config_entries.OptionsFlow):
                 "snooze_minutes":  int(user_input.get("snooze_minutes",
                                                      existing.get("snooze_minutes", 9))),
                 "enabled":         bool(user_input.get("enabled", True)),
+                # Sunrise simulation fields
+                "sunrise_enabled": bool(user_input.get("sunrise_enabled", False)),
+                "sunrise_lights":  list(user_input.get("sunrise_lights", []) or []),
+                "sunrise_minutes": int(user_input.get("sunrise_minutes",
+                                                    existing.get("sunrise_minutes", 20))),
+                "sunrise_start_kelvin":
+                    int(user_input.get("sunrise_start_kelvin",
+                                       existing.get("sunrise_start_kelvin", 2200))),
+                "sunrise_end_kelvin":
+                    int(user_input.get("sunrise_end_kelvin",
+                                       existing.get("sunrise_end_kelvin", 4500))),
+                "sunrise_start_brightness":
+                    int(user_input.get("sunrise_start_brightness",
+                                       existing.get("sunrise_start_brightness", 5))),
+                "sunrise_end_brightness":
+                    int(user_input.get("sunrise_end_brightness",
+                                       existing.get("sunrise_end_brightness", 220))),
+                "sunrise_never_dim":
+                    bool(user_input.get("sunrise_never_dim",
+                                        existing.get("sunrise_never_dim", True))),
             }
             # If a preset selected via the dropdown, override preset_url
             preset_choice = (user_input.get("preset_choice") or "").strip()
@@ -561,6 +709,31 @@ class LitheAudioOptionsFlow(config_entries.OptionsFlow):
                 vol.All(int, vol.Range(min=0, max=600)),
             vol.Optional("snooze_minutes", default=existing.get("snooze_minutes", 9)):
                 vol.All(int, vol.Range(min=1, max=60)),
+            # ── Sunrise simulation (light ramp before audio) ────────────
+            vol.Optional("sunrise_enabled",
+                        default=bool(existing.get("sunrise_enabled", False))): bool,
+            vol.Optional("sunrise_lights",
+                        default=existing.get("sunrise_lights", []) or []):
+                selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="light", multiple=True)
+                ),
+            vol.Optional("sunrise_minutes",
+                        default=int(existing.get("sunrise_minutes", 20))):
+                vol.All(int, vol.Range(min=1, max=120)),
+            vol.Optional("sunrise_start_kelvin",
+                        default=int(existing.get("sunrise_start_kelvin", 2200))):
+                vol.All(int, vol.Range(min=1500, max=6500)),
+            vol.Optional("sunrise_end_kelvin",
+                        default=int(existing.get("sunrise_end_kelvin", 4500))):
+                vol.All(int, vol.Range(min=1500, max=6500)),
+            vol.Optional("sunrise_start_brightness",
+                        default=int(existing.get("sunrise_start_brightness", 5))):
+                vol.All(int, vol.Range(min=1, max=255)),
+            vol.Optional("sunrise_end_brightness",
+                        default=int(existing.get("sunrise_end_brightness", 220))):
+                vol.All(int, vol.Range(min=1, max=255)),
+            vol.Optional("sunrise_never_dim",
+                        default=bool(existing.get("sunrise_never_dim", True))): bool,
             vol.Required("_action", default="save"): vol.In(action_options),
         }
         title_word = "Edit Alarm" if editing else "New Alarm"

@@ -773,3 +773,241 @@ alarm_dismiss:
       required: true
       selector:
         text:
+
+# ── Multi-room Groups ──────────────────────────────────────────────────────
+
+group_create:
+  name: Create Multi-room Group
+  description: >-
+    Create a virtual group media_player entity that controls multiple
+    Lithe speakers as one. After creating, reload the Lithe Audio
+    integration to make the new group entity appear.
+  fields:
+    name:
+      name: Group Name
+      description: Friendly name (used as the entity name).
+      required: true
+      example: "Downstairs"
+      selector:
+        text:
+    members:
+      name: Member Speakers
+      description: List of speaker IP addresses to include in the group.
+      required: true
+      selector:
+        text:
+          multiple: true
+    default_volume:
+      name: Default Volume
+      description: Volume applied when the group is created.
+      required: false
+      default: 50
+      selector:
+        number:
+          min: 0
+          max: 100
+          mode: slider
+
+group_update:
+  name: Update Group
+  description: Modify an existing group. Provide its id and any fields to change.
+  fields:
+    id:
+      name: Group ID
+      required: true
+      selector:
+        text:
+    name:
+      name: Group Name
+      required: false
+      selector:
+        text:
+    members:
+      name: Member Speakers
+      required: false
+      selector:
+        text:
+          multiple: true
+    default_volume:
+      name: Default Volume
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 100
+          mode: slider
+
+group_delete:
+  name: Delete Group
+  description: Remove a group. Reload the integration to remove the entity.
+  fields:
+    id:
+      name: Group ID
+      required: true
+      selector:
+        text:
+
+# ── Announcements / Broadcast / Doorbell ───────────────────────────────────
+
+announce:
+  name: Announce (TTS or URL)
+  description: >-
+    Speak a TTS message on one or more speakers (or play a URL),
+    automatically ducking and restoring prior playback. If message
+    starts with http:// or https://, it's played as audio; otherwise
+    it's rendered through HA's TTS pipeline.
+  fields:
+    message:
+      name: Message or URL
+      description: Text to speak, or HTTP(S) audio URL to play directly.
+      required: true
+      example: "Dinner is ready in five minutes"
+      selector:
+        text:
+          multiline: true
+    speakers:
+      name: Speakers
+      description: List of speaker IP addresses (default is all connected).
+      required: false
+      selector:
+        text:
+          multiple: true
+    volume:
+      name: Volume
+      description: Announcement volume (0-100). Higher = more attention-grabbing.
+      required: false
+      default: 80
+      selector:
+        number:
+          min: 0
+          max: 100
+          mode: slider
+    language:
+      name: TTS Language
+      description: Language code for TTS (e.g. 'en', 'en-GB', 'ar').
+      required: false
+      selector:
+        text:
+    tts:
+      name: TTS Service
+      description: >-
+        Which TTS service to use (e.g. 'piper', 'google_translate_say',
+        'cloud_say'). Default: first configured TTS entity.
+      required: false
+      selector:
+        text:
+    wait_seconds:
+      name: Wait Seconds
+      description: How long the announcement plays before resuming prior audio.
+      required: false
+      default: 8
+      selector:
+        number:
+          min: 1
+          max: 60
+          unit_of_measurement: "seconds"
+          mode: box
+    duck_resume:
+      name: Resume Previous Playback
+      description: Auto-restore what was playing before. Disable for stop-only announcements.
+      required: false
+      default: true
+      selector:
+        boolean:
+
+broadcast:
+  name: Broadcast (All Speakers)
+  description: >-
+    Announce on every connected Lithe Audio speaker simultaneously.
+    Same as 'announce' but targets every speaker on your network.
+    Useful for whole-home announcements like "Dinner!" or doorbell-wide
+    alerts.
+  fields:
+    message:
+      name: Message or URL
+      required: true
+      example: "Dinner is served"
+      selector:
+        text:
+          multiline: true
+    volume:
+      name: Volume
+      required: false
+      default: 80
+      selector:
+        number:
+          min: 0
+          max: 100
+          mode: slider
+    language:
+      name: TTS Language
+      required: false
+      selector:
+        text:
+    tts:
+      name: TTS Service
+      required: false
+      selector:
+        text:
+    wait_seconds:
+      name: Wait Seconds
+      required: false
+      default: 8
+      selector:
+        number:
+          min: 1
+          max: 60
+          unit_of_measurement: "seconds"
+          mode: box
+
+doorbell:
+  name: Doorbell (Chime + Optional TTS)
+  description: >-
+    Play a chime followed by an optional spoken announcement, ducking
+    and restoring prior playback. Quick reaction time — designed for
+    doorbell/intercom integrations from Reolink, Ring, Aqara, etc.
+  fields:
+    chime:
+      name: Chime Number
+      description: Which built-in chime to play (1-15 depending on model).
+      required: false
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 15
+          mode: box
+    message:
+      name: Optional Spoken Message
+      description: TTS message to play after the chime. Leave blank for chime only.
+      required: false
+      example: "Someone is at the front door"
+      selector:
+        text:
+          multiline: true
+    speakers:
+      name: Speakers
+      description: List of speaker IPs (default is all connected).
+      required: false
+      selector:
+        text:
+          multiple: true
+    volume:
+      name: Volume
+      required: false
+      default: 75
+      selector:
+        number:
+          min: 0
+          max: 100
+          mode: slider
+    language:
+      name: TTS Language
+      required: false
+      selector:
+        text:
+    tts:
+      name: TTS Service
+      required: false
+      selector:
+        text:

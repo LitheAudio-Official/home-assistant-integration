@@ -126,6 +126,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await async_setup_alarm_manager(hass)
         _register_alarm_services(hass)
 
+    # Group manager — single instance shared across config entries.
+    if "groups_mgr" not in hass.data.get(DOMAIN, {}):
+        from .group import async_setup_group_manager
+        await async_setup_group_manager(hass)
+        _register_group_services(hass)
+
+    # Announce / broadcast / doorbell services (high-level wrappers)
+    if not hass.data.get(DOMAIN, {}).get("_announce_registered"):
+        from .announce import register_announce_services
+        register_announce_services(hass)
+        hass.data[DOMAIN]["_announce_registered"] = True
+
+    # Lovelace card auto-registration (idempotent, safe to call repeatedly)
+    if not hass.data.get(DOMAIN, {}).get("_card_registered"):
+        try:
+            from .card_resource import async_register_card
+            await async_register_card(hass)
+            hass.data[DOMAIN]["_card_registered"] = True
+        except Exception as e:
+            _LOGGER.debug("Card registration failed (non-fatal): %s", e)
+
     # Apply Prayer Scheduler options if user has configured them via UI
     await _apply_prayer_options(hass, entry)
 
@@ -209,6 +230,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "set_volume_preset", "select_source_type",
                 "alarm_create", "alarm_update", "alarm_delete",
                 "alarm_toggle", "alarm_snooze", "alarm_dismiss",
+                "group_create", "group_update", "group_delete",
+                "announce", "broadcast", "doorbell",
                 "set_dsp_eq", "set_dsp_output", "set_dsp_nightmode",
                 "set_dsp_highpass", "set_dsp_balance", "set_dsp_loudness",
                 "bluetooth_pair", "bluetooth_disconnect",
@@ -263,6 +286,56 @@ def _resolve_coordinators(hass: HomeAssistant, call: ServiceCall) -> list[LitheA
             continue
         coordinators.append(entry_data[DATA_COORDINATOR])
     return coordinators
+
+
+def _register_group_services(hass: HomeAssistant) -> None:
+    """Register group-management services.
+
+    Services:
+      lithe_audio.group_create
+      lithe_audio.group_update
+      lithe_audio.group_delete
+    """
+    from .group import get_group_manager
+
+    async def svc_group_create(call):
+        mgr = get_group_manager(hass)
+        if not mgr:
+            return
+        members = call.data.get("members") or []
+        if isinstance(members, str):
+            members = [m.strip() for m in members.split(",") if m.strip()]
+        group = {
+            "name":     (call.data.get("name") or "New Group").strip(),
+            "members":  members,
+            "default_volume": int(call.data.get("default_volume", 50)),
+        }
+        gid = await mgr.async_add_group(group)
+        _LOGGER.info("Created group %s — restart HA to see the new media_player entity", gid)
+
+    async def svc_group_update(call):
+        mgr = get_group_manager(hass)
+        if not mgr:
+            return
+        gid = call.data.get("id")
+        if not gid:
+            return
+        patch = {k: v for k, v in call.data.items() if k != "id"}
+        if "members" in patch and isinstance(patch["members"], str):
+            patch["members"] = [m.strip() for m in patch["members"].split(",") if m.strip()]
+        await mgr.async_update_group(gid, patch)
+
+    async def svc_group_delete(call):
+        mgr = get_group_manager(hass)
+        if not mgr:
+            return
+        gid = call.data.get("id")
+        if gid:
+            await mgr.async_delete_group(gid)
+
+    hass.services.async_register(DOMAIN, "group_create", svc_group_create)
+    hass.services.async_register(DOMAIN, "group_update", svc_group_update)
+    hass.services.async_register(DOMAIN, "group_delete", svc_group_delete)
 
 
 def _register_alarm_services(hass: HomeAssistant) -> None:
