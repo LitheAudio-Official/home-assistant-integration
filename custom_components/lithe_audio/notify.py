@@ -97,15 +97,12 @@ class LitheTannoyNotify(BaseNotificationService):
             _LOGGER.warning("Unknown tannoy mode: %s", mode)
 
     async def _tannoy_start(self, speakers: list[str], url: str, volume: int) -> None:
-        """Save vol+play_state, STOP current source, raise volume, play URL on first speaker.
+        """Save vol+play_state, pause, raise volume, play URL on first speaker.
 
-        KEY DESIGN: we use STOP (MB#40 SET STOP) not PAUSE. Per LUCI spec
-        §9.14, STOP "is applicable in all states" — it terminates the
-        current playback session entirely. PAUSE only freezes the stream
-        while keeping the session open, which means Spotify Connect /
-        AirPlay still own the audio path and our subsequent PLAYITEM:DIRECT
-        gets ignored. STOP releases the path so source can switch to 17
-        (Direct URL) when we play the URL.
+        Note on PAUSE vs STOP: we use PAUSE because STOP causes this
+        firmware to push SPEAKER_INACTIVE and then refuse PLAYITEM:DIRECT
+        entirely. PAUSE keeps the audio subsystem alive while reducing
+        the chance of Spotify Connect interfering with our PLAYITEM.
         """
         first_coord: LitheAudioCoordinator | None = None
 
@@ -126,18 +123,13 @@ class LitheTannoyNotify(BaseNotificationService):
                 "source":     client.state.source_id,
             }
 
-            # Unmute, STOP current session, set announcement volume
+            # Pause + unmute + raise volume
             try:
                 if client.state.muted:
                     await client.async_mute(False)
-                # STOP unconditionally — works in all states per spec.
-                # This releases the source so the announcement can take
-                # over (Spotify Connect / AirPlay disconnect cleanly).
-                await client.async_stop()
-                # Give the firmware time to release the audio mixer.
-                # 250-400ms is what the Lithe app appears to use; we go
-                # with 400ms to be safe with Spotify Connect on flaky WiFi.
-                await asyncio.sleep(0.4)
+                if client.state.play_state == "playing":
+                    await client.async_pause()
+                await asyncio.sleep(0.15)
                 await client.async_set_volume(volume)
             except Exception as e:
                 _LOGGER.error("Tannoy start failed for %s: %s", host, e)
@@ -149,21 +141,19 @@ class LitheTannoyNotify(BaseNotificationService):
         if first_coord and url:
             try:
                 await first_coord.client.async_play_url(url)
-                # Briefly verify the source actually switched. If it did
-                # not, the firmware is rejecting PLAYITEM:DIRECT for some
-                # reason — log it loudly so the user knows.
-                await asyncio.sleep(1.0)
+                # Verify source actually became 17 (Direct URL)
+                await asyncio.sleep(1.5)
                 src = first_coord.client.state.source_id
                 if src != 17:
                     _LOGGER.warning(
-                        "Tannoy: speaker source did not switch to Direct URL "
-                        "(source=%d). The announcement may not be audible. "
-                        "Check that the URL %s is reachable from the speaker.",
+                        "Tannoy: source did not switch to Direct URL "
+                        "(still source=%d). Announcement may not be audible. "
+                        "URL: %s",
                         src, url,
                     )
                 else:
                     _LOGGER.info(
-                        "Tannoy: source switched to Direct URL (17) playing %s",
+                        "Tannoy: source switched to Direct URL playing %s",
                         url,
                     )
             except Exception as e:

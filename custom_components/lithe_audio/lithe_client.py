@@ -416,30 +416,32 @@ class LitheClient:
         await self._send(0x02, MB_DEVICE_NAME, name)
 
     async def async_play_chime(self, chime_number: int) -> None:
-        """Trigger an embedded audiocue.
+        """Trigger an embedded audio cue via MB#80 + MB#82 flow.
 
-        IMPORTANT empirical findings on LS10/PRO 2 (CR443GP_3713 firmware):
+        Per Lithe developer guidance (2026-05-14):
 
-        1. MB#80 'play N' is the spec-correct way for indices 1-10.
-           Per LUCI spec §9.33: "LS10 supports only .wav" files.
-           MB#80 plays as an OVERLAY on the current source — it does NOT
-           require a source switch, which makes it safe to call while
-           Spotify Connect is active on source 4.
+          "We have added a LUCI Message box to notify Audio chime cue
+           start to MCU. On getting this notification, MCU must open
+           the audio path for playback."
 
-        2. MB#41 PLAYITEM:DIRECT for chimes 10-15 requires the file path
-           ending in .wav not .mp3 on LS10 firmware. The earlier failure
-           was due to wrong extension — .mp3 files don't exist there.
+          "LUCI MB#80 is used to play the audio cues on the device.
+           LS10 send response back in MB#82 (newly added). Audio cue
+           start, playback success/failure notifications are notified
+           through MB#82."
 
-        3. PLAYITEM:DIRECT triggers a source switch which the speaker
-           DENIES while another source (Spotify Connect) holds the
-           session — even if paused. This is the root cause of all the
-           silent-chime issues.
+        Protocol flow on this firmware:
+          1. Host → LS10:  MB#80 SET "play N"
+          2. LS10 → host:  MB#82 "AUDIOCUE_START"
+          3. Host → LS10:  MB#82 SET "AUDIOPATH_OPEN" (handled in _dispatch_rx)
+          4. LS10 plays the cue
+          5. LS10 → host:  MB#82 "SUCCESS" (or FAILURE/NI on error)
 
-        Strategy:
-          - Slots 1-10: MB#80 "play N" (overlay, no source switch needed)
-          - Slots 11-15: MB#41 PLAYITEM:DIRECT:/system/usr/songN.wav
+        On older firmware without MB#82, MB#80 still works but plays
+        silently if no other source has released the audio path.
+
+        Slots 1-10 are supported via MB#80 per spec §9.33.
         """
-        n = max(1, min(15, int(chime_number)))
+        n = max(1, min(10, int(chime_number)))
         now = asyncio.get_event_loop().time()
         sock_state = "no_writer" if self._writer is None else (
             "closing" if self._writer.is_closing() else "open"
@@ -451,19 +453,14 @@ class LitheClient:
         )
 
         try:
-            if n <= 10:
-                # MB#80 overlay - doesn't require source switch
-                await self._send(0x02, MB_CHIME, f"play {n}")
-                self._last_chime_mbid = MB_CHIME
-            else:
-                # MB#41 PLAYITEM:DIRECT - .wav not .mp3 on LS10
-                await self._send(
-                    0x02, MB_BROWSE,
-                    f"PLAYITEM:DIRECT:/system/usr/song{n}.wav",
-                )
-                self._last_chime_mbid = MB_BROWSE
+            # MB#80 SET "play N" — the documented audio cue trigger.
+            # The newer firmware will respond via MB#82 AUDIOCUE_START,
+            # which our _dispatch_rx handler answers with AUDIOPATH_OPEN
+            # to permit playback.
+            await self._send(0x02, MB_CHIME, f"play {n}")
+            self._last_chime_mbid = MB_CHIME
         except Exception as e:
-            _LOGGER.warning("Chime sequence failed: %s", e)
+            _LOGGER.warning("Chime send failed: %s", e)
 
         self._last_chime_time = now
 
@@ -861,25 +858,53 @@ class LitheClient:
                 _LOGGER.debug("Chime MB#80 response: %s", r)
 
         elif mbid == MB_AUDIOCUE:
-            # Newer-firmware audiocue lifecycle (per Lithe vendor docs).
-            # Speaker→host notifications:
-            #   AUDIOCUE_START — chime starting, speaker auto-pauses music
-            #   SUCCESS        — chime finished playing, music will resume
-            #   FAILURE / NI   — slot empty or playback failed
+            # Audiocue lifecycle (Lithe firmware extension, MB#82).
+            #
+            # Per Lithe developer guidance (2026-05-14):
+            #   "We have added a LUCI Message box to notify Audio chime cue
+            #    start to MCU. On getting this notification, MCU must open
+            #    the audio path for playback."
+            #
+            #   "LUCI MB#80 is used to play the audio cues on the device.
+            #    LS10 send response back in MB#82(newly added). Audio cue
+            #    start, playback success/failure notifications are notified
+            #    through MB#82."
+            #
+            # Flow:
+            #   1. We send MB#80 SET "play N"
+            #   2. Speaker → us: MB#82 "AUDIOCUE_START"
+            #   3. We → speaker: MB#82 SET "AUDIOPATH_OPEN" (acknowledge that
+            #      the audio path is open — equivalent to an MCU enabling
+            #      its audio DSP/codec for cue playback). For us as a
+            #      software host, this is purely an acknowledgement; we
+            #      don't have hardware to gate.
+            #   4. Speaker plays the cue, then notifies success/failure.
             r = payload.strip()
             ru = r.upper()
-            # Always log MB#82 at info during diagnosis — vital signal
             if self._last_chime_time:
                 ms = (asyncio.get_event_loop().time() - self._last_chime_time) * 1000.0
                 _LOGGER.info("CHIME-DIAG MB#82 +%.1fms: %r", ms, r)
             else:
                 _LOGGER.info("CHIME-DIAG MB#82 (unsolicited): %r", r)
-            if ru in ("NI", "FILE_NOT_FOUND", "FAILURE", "FAIL"):
+
+            if ru in ("AUDIOCUE_START", "AUDIO_CUE_START", "START"):
+                # Speaker is requesting we open the audio path. Acknowledge
+                # immediately so playback can proceed.
+                _LOGGER.info(
+                    "MB#82 AUDIOCUE_START received — responding with "
+                    "AUDIOPATH_OPEN to permit cue playback"
+                )
+                asyncio.create_task(
+                    self._send(0x02, MB_AUDIOCUE, "AUDIOPATH_OPEN")
+                )
+            elif ru in ("NI", "FILE_NOT_FOUND", "FAILURE", "FAIL"):
                 _LOGGER.warning(
-                    "Audiocue failed: '%s'. The slot may be empty or the "
-                    "speaker is in a state that won't allow chime playback.",
+                    "Audiocue playback failed: '%s'. Slot may be empty "
+                    "or speaker rejected the cue.",
                     r,
                 )
+            elif ru == "SUCCESS":
+                _LOGGER.info("Audiocue completed successfully")
 
         elif mbid == MB_DSP:
             # Payload is binary DSP sub-packet(s). Decode for visibility.

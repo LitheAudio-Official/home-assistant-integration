@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from homeassistant.components import media_source
 from homeassistant.components.media_player import (
     BrowseMedia,
     MediaClass,
@@ -12,6 +13,9 @@ from homeassistant.components.media_player import (
     MediaPlayerState,
     MediaType,
     RepeatMode,
+)
+from homeassistant.components.media_player.browse_media import (
+    async_process_play_media_url,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
@@ -104,6 +108,10 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
             | MediaPlayerEntityFeature.SHUFFLE_SET
             | MediaPlayerEntityFeature.REPEAT_SET
         )
+        # MEDIA_ANNOUNCE was added in HA 2022.12 — guard the import
+        ann = getattr(MediaPlayerEntityFeature, "MEDIA_ANNOUNCE", None)
+        if ann is not None:
+            flags |= ann
         # SEEK only when source is not a live stream
         if not self._client.state.is_live:
             flags |= MediaPlayerEntityFeature.SEEK
@@ -266,13 +274,85 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
     async def async_play_media(
         self, media_type: str, media_id: str, **kwargs: Any
     ) -> None:
-        """Play a URL or favourite on the speaker."""
-        # Favourite by content_id
+        """Play a URL or favourite on the speaker.
+
+        Supports HA's standard play_media announce flow (per the
+        media_player docs at https://www.home-assistant.io/integrations/
+        media_player/#action-play-media). When ``announce=True`` is
+        passed, the media is treated as a temporary announcement that
+        interrupts current playback — this routes through the tannoy
+        notify path which:
+
+          1. Saves current volume + play state
+          2. Pauses current source
+          3. Sets announcement volume (from extra.volume or default 70)
+          4. Plays the announcement URL via MB#41 PLAYITEM:DIRECT
+          5. (Future) restores volume + resumes original source
+
+        This is the standard way to do chimes / TTS / prayer / doorbell
+        sounds in Home Assistant and works with the built-in voice
+        assistant announcement UI, dashboard buttons, automations, etc.
+        """
+        # Favourite by content_id (no announce flow — favourites resume
+        # the speaker's own playback engine)
         if media_id.startswith(_FAV_PREFIX):
             slot = int(media_id[len(_FAV_PREFIX):])
             await self._client.async_play_favourite(slot)
             return
 
+        # Direct URL preset (Adhan/Quran/radio from our Browse Media tree)
+        if media_id.startswith("lithe_url:"):
+            media_id = media_id[len("lithe_url:"):]
+            # Fall through to URL playback below
+
+        # Resolve media_source:// URIs (Radio Browser, My Media, TTS, etc.)
+        # into a real HTTP URL the speaker can stream.
+        if media_id.startswith("media-source://") or media_source.is_media_source_id(media_id):
+            try:
+                resolved = await media_source.async_resolve_media(
+                    self.hass, media_id, self.entity_id,
+                )
+                # Convert relative URLs (e.g. TTS) to absolute so the
+                # speaker can reach them across the network.
+                media_id = async_process_play_media_url(self.hass, resolved.url)
+                if not media_type or media_type == "":
+                    media_type = MediaType.MUSIC
+                _LOGGER.debug("Resolved media_source → %s", media_id)
+            except Exception as e:
+                _LOGGER.error("Failed to resolve media_source %s: %s",
+                              media_id, e)
+                return
+
+        # Detect announce intent (HA media_player standard)
+        announce = bool(kwargs.get("announce") or False)
+        extra: dict = kwargs.get("extra") or {}
+
+        if announce and media_id.startswith(("http://", "https://")):
+            # Route through tannoy notify service which handles
+            # save/pause/volume/play. Use extra.volume if provided.
+            volume = int(extra.get("volume", 70))
+            try:
+                await self.hass.services.async_call(
+                    "notify", "lithe_tannoy",
+                    {
+                        "message": media_id,
+                        "data": {
+                            "mode":     "start",
+                            "volume":   volume,
+                            "speakers": [self._client.host],
+                        },
+                    },
+                    blocking=False,
+                )
+                _LOGGER.info(
+                    "play_media announce: routed to lithe_tannoy "
+                    "(url=%s volume=%d)", media_id, volume,
+                )
+            except Exception as e:
+                _LOGGER.error("Announce via tannoy failed: %s", e)
+            return
+
+        # Regular play (no announce) — direct URL via MB#41 PLAYITEM:DIRECT
         if media_type in _PLAYABLE_TYPES or media_id.startswith(("http://", "https://")):
             await self._client.async_play_url(media_id)
             return
@@ -284,19 +364,44 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
         media_content_type: str | None = None,
         media_content_id: str | None = None,
     ) -> BrowseMedia:
-        """Top-level browse.
+        """Browse Lithe favourites + HA media sources + Direct URL presets.
 
-        Full browseable tree (NAS, streaming services, etc.) is not yet
-        implemented — that requires SELECTITEM-based navigation of the
-        speaker's UI tree (MB#41 SELECTITEM → MB#42 ItemList response).
-        Mapping that hierarchy reliably requires a packet capture from
-        the Lithe Audio app for reference.
-
-        For now: shows favourites the user has saved via the Lithe app.
+        Top-level tree:
+          ├── Favourites          (speaker-side saved slots)
+          ├── 🔗 Direct URL       (Adhan, Quran, custom HTTP URLs)
+          ├── 📻 Radio Browser    (from HA media_source)
+          ├── 📁 My Media         (from HA media_source)
+          ├── 🔊 Text-to-speech   (from HA media_source)
+          └── …other HA sources
         """
-        children = []
+        # Direct URL folder — expand it to see Adhan/Quran/custom presets
+        if media_content_id == "lithe_direct_url":
+            return self._build_direct_url_folder()
 
-        # Favourites first
+        # A direct-url item: play immediately (handled by play_media)
+        if media_content_id and media_content_id.startswith("lithe_url:"):
+            url = media_content_id[len("lithe_url:"):]
+            # Browse-into of a leaf node — HA will call play_media instead;
+            # this branch shouldn't normally hit, but return self for safety.
+            return BrowseMedia(
+                title=url, media_class=MediaClass.URL,
+                media_content_id=media_content_id,
+                media_content_type=MediaType.MUSIC,
+                can_play=True, can_expand=False,
+            )
+
+        # Drill-down into a media_source:// URI
+        if media_content_id and media_content_id.startswith("media-source://"):
+            return await media_source.async_browse_media(
+                self.hass, media_content_id,
+                content_filter=lambda item: item.media_content_type.startswith("audio/")
+                                            or item.media_content_type in _PLAYABLE_TYPES,
+            )
+
+        # Build root: favourites + media sources
+        children: list[BrowseMedia] = []
+
+        # 1) Favourites (speaker-side, saved via Lithe app or our save_favourite)
         for fav in self._client.state.favourites:
             children.append(BrowseMedia(
                 title=fav.get("name", f"Favourite {fav.get('slot')}"),
@@ -307,10 +412,34 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
                 can_expand=False,
             ))
 
+        # 2) Direct URL folder (Adhan, Quran, internet radio presets)
+        children.append(BrowseMedia(
+            title="🔗 Direct URL — Adhan, Quran & Radio",
+            media_class=MediaClass.DIRECTORY,
+            media_content_id="lithe_direct_url",
+            media_content_type="library",
+            can_play=False,
+            can_expand=True,
+            thumbnail=None,
+        ))
+
+        # 3) HA media sources (Radio Browser, My Media, TTS, etc.)
+        try:
+            ms_root = await media_source.async_browse_media(
+                self.hass, None,
+                content_filter=lambda item: item.media_content_type.startswith("audio/")
+                                            or item.media_content_type in _PLAYABLE_TYPES,
+            )
+            # Add each top-level source as an expandable child
+            if ms_root and ms_root.children:
+                for c in ms_root.children:
+                    children.append(c)
+        except Exception as e:
+            _LOGGER.warning("Failed to browse HA media sources: %s", e)
+
         if not children:
-            # Placeholder so the user sees something other than empty
             children.append(BrowseMedia(
-                title="No favourites yet — save some in the Lithe Audio app",
+                title="No favourites or media sources yet",
                 media_class=MediaClass.URL,
                 media_content_id="lithe_empty",
                 media_content_type="library",
@@ -322,6 +451,71 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
             title="Lithe Audio",
             media_class=MediaClass.DIRECTORY,
             media_content_id="lithe_root",
+            media_content_type="library",
+            can_play=False,
+            can_expand=True,
+            children=children,
+            children_media_class=MediaClass.MUSIC,
+        )
+
+    def _build_direct_url_folder(self) -> BrowseMedia:
+        """Build the 'Direct URL' sub-folder with Adhan + Quran presets.
+
+        Each preset is a playable BrowseMedia item with the URL embedded
+        in the content_id (prefix 'lithe_url:'). When the user taps one,
+        HA calls async_play_media with that content_id; we strip the
+        prefix and route to async_play_url → MB#41 PLAYITEM:DIRECT.
+
+        Users can also call play_media with any HTTP URL directly (no
+        browse needed) — this folder is just a convenience preset list.
+        """
+        from .const import ADHAN_PRESETS, QURAN_JUZ
+
+        children: list[BrowseMedia] = []
+
+        # Adhan presets first (most commonly played)
+        for label, url in ADHAN_PRESETS.items():
+            children.append(BrowseMedia(
+                title=f"🕌 {label}",
+                media_class=MediaClass.MUSIC,
+                media_content_id=f"lithe_url:{url}",
+                media_content_type=MediaType.MUSIC,
+                can_play=True,
+                can_expand=False,
+            ))
+
+        # Then all 30 Juz of the Quran
+        for juz_num, url in QURAN_JUZ.items():
+            children.append(BrowseMedia(
+                title=f"📖 Juz {juz_num} — Quran",
+                media_class=MediaClass.MUSIC,
+                media_content_id=f"lithe_url:{url}",
+                media_content_type=MediaType.MUSIC,
+                can_play=True,
+                can_expand=False,
+            ))
+
+        # A few common internet radio URLs as bonus
+        radio_extras = {
+            "🎵 BBC Radio 1":  "http://stream.live.vc.bbcmedia.co.uk/bbc_radio_one",
+            "🎵 BBC Radio 2":  "http://stream.live.vc.bbcmedia.co.uk/bbc_radio_two",
+            "🎵 BBC Radio 4":  "http://stream.live.vc.bbcmedia.co.uk/bbc_radio_fourfm",
+            "🎵 Classic FM":   "http://media-ice.musicradio.com/ClassicFMMP3",
+        }
+        for label, url in radio_extras.items():
+            children.append(BrowseMedia(
+                title=label,
+                media_class=MediaClass.MUSIC,
+                media_content_id=f"lithe_url:{url}",
+                media_content_type=MediaType.MUSIC,
+                can_play=True,
+                can_expand=False,
+            ))
+
+        return BrowseMedia(
+            title="Direct URL Presets",
+            media_class=MediaClass.DIRECTORY,
+            media_content_id="lithe_direct_url",
             media_content_type="library",
             can_play=False,
             can_expand=True,

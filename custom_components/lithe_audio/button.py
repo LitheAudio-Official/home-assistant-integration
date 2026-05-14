@@ -33,9 +33,13 @@ async def async_setup_entry(
     for slot in range(1, chime_count + 1):
         entities.append(LitheChimeButton(coordinator, entry, slot))
 
-    # Save-to-favourite buttons (slots 1-5) — press to save currently playing
-    for slot in range(1, 6):
+    # Save-to-favourite buttons (slots 1-9) — press to save currently playing
+    for slot in range(1, 10):
         entities.append(LitheSaveFavouriteButton(coordinator, entry, slot))
+
+    # Heart button: saves current track to the NEXT free favourite slot.
+    # Press once to add current track to favourites without picking a slot.
+    entities.append(LitheHeartButton(coordinator, entry))
 
     # Diagnostics
     entities.append(LitheRebootButton(coordinator, entry))
@@ -152,3 +156,54 @@ class LitheSaveFavouriteButton(ButtonEntity):
     async def async_press(self) -> None:
         _LOGGER.info("Save to favourite slot %d pressed", self._slot)
         await self._client.async_save_favourite(self._slot)
+
+
+class LitheHeartButton(ButtonEntity):
+    """♥ Heart button — saves current track to the next free favourite slot.
+
+    Press once to add the currently-playing track to favourites without
+    needing to pick a slot. Auto-increments: first press writes slot 1,
+    second writes slot 2, ... up to slot 9. After all 9 are filled, it
+    wraps around to slot 1 (oldest gets overwritten).
+
+    Slot state is tracked on the client; the next free slot is determined
+    by scanning the speaker's reported favourites list for the lowest
+    unused number 1-9.
+    """
+
+    _attr_has_entity_name = True
+    _attr_icon = "mdi:heart"
+
+    def __init__(self, coordinator: LitheAudioCoordinator, entry: ConfigEntry) -> None:
+        self._coord = coordinator
+        self._client = coordinator.client
+        self._entry = entry
+        self._attr_name = "♥ Save Current Track"
+        self._attr_unique_id = f"{entry.data['host']}_{entry.entry_id}_heart_save"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(identifiers={(DOMAIN, self._entry.data["host"])})
+
+    @property
+    def available(self) -> bool:
+        return self._client.state.connected
+
+    def _next_free_slot(self) -> int:
+        """Find next free favourite slot (1-9). Wraps around after 9."""
+        used = {f.get("slot") for f in self._client.state.favourites if f.get("slot")}
+        for slot in range(1, 10):
+            if slot not in used:
+                return slot
+        # All 9 slots full — overwrite slot 1 (or the next round-robin slot)
+        # We keep a private counter for round-robin past-full behaviour.
+        last = getattr(self._client, "_heart_last_slot", 0)
+        next_slot = (last % 9) + 1
+        self._client._heart_last_slot = next_slot  # type: ignore[attr-defined]
+        return next_slot
+
+    async def async_press(self) -> None:
+        slot = self._next_free_slot()
+        _LOGGER.info("Heart pressed — saving current track to favourite slot %d", slot)
+        await self._client.async_save_favourite(slot)
+        self._client._heart_last_slot = slot  # type: ignore[attr-defined]
