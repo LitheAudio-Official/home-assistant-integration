@@ -230,6 +230,37 @@
         "data": {
           "level": "Log level"
         }
+      },
+      "alarms": {
+        "title": "Alarms",
+        "description": "{summary}",
+        "data": {
+          "choice": "Pick an alarm to edit, or add a new one"
+        }
+      },
+      "alarm_edit": {
+        "title": "{title}",
+        "description": "Configure when and what to play. Schedule fires on the chosen speakers at the time specified.",
+        "data": {
+          "name": "Alarm name",
+          "time": "Time (HH:MM)",
+          "enabled": "Enabled",
+          "repeat": "Repeat mode",
+          "days": "Days of week (weekly mode only)",
+          "day_of_month": "Day of month (monthly mode only)",
+          "date": "Date YYYY-MM-DD (one-off mode only)",
+          "speakers": "Speakers (comma-separated IPs)",
+          "source": "Audio source",
+          "preset_choice": "Preset (used when source = Preset URL)",
+          "preset_url": "Custom Preset URL (used if no preset selected)",
+          "favourite_slot": "Favourite slot (used when source = Favourite)",
+          "chime_slot": "Chime slot (used when source = Chime)",
+          "custom_url": "Custom URL (used when source = Custom URL)",
+          "volume": "Volume (0-100)",
+          "fade_in_seconds": "Fade-in duration (seconds, 0 = no fade)",
+          "snooze_minutes": "Default snooze (minutes)",
+          "_action": "Action"
+        }
       }
     },
     "error": {

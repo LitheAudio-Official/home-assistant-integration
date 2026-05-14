@@ -19,6 +19,7 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.data_entry_flow import FlowResult
+from homeassistant.helpers import selector
 
 from .const import (
     BUNDLED_CERT_KEY, BUNDLED_CERT_PEM,
@@ -329,6 +330,8 @@ class LitheAudioOptionsFlow(config_entries.OptionsFlow):
         # Per-prayer wizard state
         self._wizard_index: int = 0
         self._wizard_entries: dict[str, dict[str, Any]] = {}
+        # Alarm edit state — None means "new alarm", dict means "editing"
+        self._alarm_draft: dict[str, Any] | None = None
 
     # ── Step 1: top-level menu ─────────────────────────────────────────
     async def async_step_init(
@@ -341,8 +344,232 @@ class LitheAudioOptionsFlow(config_entries.OptionsFlow):
                 "prayer_entries":   "🕋  Prayer Schedule — Per-prayer settings",
                 "prayer_test":      "▶️  Test play an Adhan / Quran URL",
                 "prayer_view":      "📋  View today's schedule",
+                "alarms":           "⏰  Alarms — view, add, edit",
                 "logging":          "🐞  Debug logging (for support)",
                 "prayer_disable":   "✖️  Disable Prayer Scheduler",
+            },
+        )
+
+    # ── Alarms — list existing alarms + "Add new" ──────────────────────
+    async def async_step_alarms(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Top-level Alarms menu: list existing alarms + add new."""
+        from .alarms import get_manager
+        mgr = get_manager(self.hass)
+        if not mgr:
+            return await self.async_step_init()
+
+        alarms = mgr.list_alarms()
+
+        # Selection from list
+        if user_input is not None:
+            choice = user_input.get("choice", "")
+            if choice == "__add__":
+                self._alarm_draft = None  # signals "new"
+                return await self.async_step_alarm_edit()
+            if choice and choice in {a["id"] for a in alarms}:
+                self._alarm_draft = dict(mgr.get_alarm(choice) or {})
+                return await self.async_step_alarm_edit()
+            return await self.async_step_init()
+
+        # Build choice dropdown: each alarm + add-new
+        choices: dict[str, str] = {}
+        for a in alarms:
+            enabled_icon = "✅" if a.get("enabled") else "⚪"
+            name = a.get("name", "Alarm")
+            t = a.get("time", "--:--")
+            repeat = a.get("repeat", "daily")
+            if repeat == "weekly":
+                days = ",".join(a.get("days", []) or [])
+                repeat_str = f"weekly [{days}]"
+            elif repeat == "one_off":
+                repeat_str = f"once on {a.get('date','?')}"
+            elif repeat == "monthly":
+                repeat_str = f"day {a.get('day_of_month','?')}"
+            else:
+                repeat_str = "daily"
+            choices[a["id"]] = f"{enabled_icon} {name} — {t} ({repeat_str})"
+        choices["__add__"] = "➕  Add new alarm"
+
+        schema = vol.Schema({
+            vol.Required("choice", default="__add__"): vol.In(choices),
+        })
+        if alarms:
+            description = (
+                f"You have {len(alarms)} alarm(s). Pick one to edit/delete, "
+                "or '➕ Add new alarm' to create one."
+            )
+        else:
+            description = (
+                "No alarms yet. Choose '➕ Add new alarm' to create your first."
+            )
+        return self.async_show_form(
+            step_id="alarms",
+            data_schema=schema,
+            description_placeholders={"summary": description},
+        )
+
+    # ── Alarm edit (also handles create) ───────────────────────────────
+    async def async_step_alarm_edit(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Create or edit an alarm.
+
+        self._alarm_draft is either None (creating) or a dict (editing).
+        """
+        from .alarms import (
+            get_manager, default_alarm, DAY_TOKENS,
+            REPEAT_ONE_OFF, REPEAT_DAILY, REPEAT_WEEKLY, REPEAT_MONTHLY,
+            SOURCE_PRESET, SOURCE_FAVOURITE, SOURCE_CHIME, SOURCE_URL,
+        )
+        mgr = get_manager(self.hass)
+        if not mgr:
+            return await self.async_step_init()
+
+        editing = self._alarm_draft is not None
+        existing = self._alarm_draft if editing else default_alarm()
+
+        # Resolve the host of THIS speaker so it can be the default target
+        my_host = self._entry.data.get("host", "")
+
+        # Handle delete
+        if user_input is not None and user_input.get("_action") == "delete":
+            if editing and existing.get("id"):
+                await mgr.async_delete_alarm(existing["id"])
+                _LOGGER.info("Deleted alarm %s via UI", existing["id"])
+            return await self.async_step_alarms()
+
+        # Handle save
+        if user_input is not None and user_input.get("_action") != "delete":
+            # Build updated alarm dict
+            patch = {
+                "name":            (user_input.get("name") or existing["name"]).strip(),
+                "time":            user_input.get("time", existing["time"]),
+                "repeat":          user_input.get("repeat", existing["repeat"]),
+                "days":            user_input.get("days", existing.get("days") or DAY_TOKENS),
+                "day_of_month":    int(user_input.get("day_of_month",
+                                                      existing.get("day_of_month", 1))),
+                "date":            user_input.get("date", existing.get("date")),
+                "speakers":        [s.strip() for s in
+                                    (user_input.get("speakers") or my_host).split(",")
+                                    if s.strip()],
+                "source":          user_input.get("source", existing["source"]),
+                "preset_url":      (user_input.get("preset_url") or existing.get("preset_url","")).strip(),
+                "favourite_slot":  int(user_input.get("favourite_slot",
+                                                      existing.get("favourite_slot", 1))),
+                "chime_slot":      int(user_input.get("chime_slot",
+                                                      existing.get("chime_slot", 1))),
+                "custom_url":      (user_input.get("custom_url") or existing.get("custom_url","")).strip(),
+                "volume":          int(user_input.get("volume", existing.get("volume", 60))),
+                "fade_in_seconds": int(user_input.get("fade_in_seconds",
+                                                     existing.get("fade_in_seconds", 0))),
+                "snooze_minutes":  int(user_input.get("snooze_minutes",
+                                                     existing.get("snooze_minutes", 9))),
+                "enabled":         bool(user_input.get("enabled", True)),
+            }
+            # If a preset selected via the dropdown, override preset_url
+            preset_choice = (user_input.get("preset_choice") or "").strip()
+            if preset_choice and patch["source"] == SOURCE_PRESET:
+                patch["preset_url"] = preset_choice
+
+            if editing:
+                await mgr.async_update_alarm(existing["id"], patch)
+                _LOGGER.info("Updated alarm %s via UI", existing["id"])
+            else:
+                alarm = {**existing, **patch}
+                alarm.pop("id", None)  # let manager assign new id
+                aid = await mgr.async_add_alarm(alarm)
+                _LOGGER.info("Created alarm %s via UI", aid)
+            return await self.async_step_alarms()
+
+        # Render the form
+        from .const import all_preset_options
+        presets = all_preset_options()
+        preset_choices = {"": "(use URL field below)"}
+        for label, url in presets.items():
+            preset_choices[url] = label
+
+        # Match current preset_url to dropdown
+        match_preset = ""
+        cur_url = existing.get("preset_url", "")
+        for url in presets.values():
+            if url == cur_url:
+                match_preset = url
+                break
+
+        speakers_default = ", ".join(existing.get("speakers") or [my_host])
+
+        repeat_options = {
+            REPEAT_ONE_OFF: "One-off (single date)",
+            REPEAT_DAILY:   "Daily",
+            REPEAT_WEEKLY:  "Weekly (specific days)",
+            REPEAT_MONTHLY: "Monthly (day of month)",
+        }
+        source_options = {
+            SOURCE_PRESET:    "Preset URL (Adhan / Quran)",
+            SOURCE_FAVOURITE: "Saved Favourite (1-9)",
+            SOURCE_CHIME:     "Embedded Chime (1-10)",
+            SOURCE_URL:       "Custom HTTP URL",
+        }
+        action_options = {
+            "save":   "💾  Save",
+        }
+        if editing:
+            action_options["delete"] = "🗑  Delete this alarm"
+
+        schema_dict: dict[Any, Any] = {
+            vol.Required("name", default=existing.get("name", "New Alarm")): str,
+            vol.Required("time", default=existing.get("time", "07:00")):
+                selector.TimeSelector() if hasattr(selector, "TimeSelector") else str,
+            vol.Required("enabled", default=bool(existing.get("enabled", True))): bool,
+            vol.Required("repeat", default=existing.get("repeat", REPEAT_DAILY)):
+                vol.In(repeat_options),
+            vol.Optional("days", default=existing.get("days") or DAY_TOKENS):
+                selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            {"value": "mon", "label": "Monday"},
+                            {"value": "tue", "label": "Tuesday"},
+                            {"value": "wed", "label": "Wednesday"},
+                            {"value": "thu", "label": "Thursday"},
+                            {"value": "fri", "label": "Friday"},
+                            {"value": "sat", "label": "Saturday"},
+                            {"value": "sun", "label": "Sunday"},
+                        ],
+                        multiple=True,
+                        mode=selector.SelectSelectorMode.LIST,
+                    )
+                ),
+            vol.Optional("day_of_month", default=existing.get("day_of_month", 1)):
+                vol.All(int, vol.Range(min=1, max=31)),
+            vol.Optional("date", default=existing.get("date", "") or ""): str,
+            vol.Required("speakers", default=speakers_default): str,
+            vol.Required("source", default=existing.get("source", SOURCE_PRESET)):
+                vol.In(source_options),
+            vol.Optional("preset_choice", default=match_preset):
+                vol.In(preset_choices),
+            vol.Optional("preset_url", default=existing.get("preset_url", "")): str,
+            vol.Optional("favourite_slot", default=existing.get("favourite_slot", 1)):
+                vol.All(int, vol.Range(min=1, max=9)),
+            vol.Optional("chime_slot", default=existing.get("chime_slot", 1)):
+                vol.All(int, vol.Range(min=1, max=10)),
+            vol.Optional("custom_url", default=existing.get("custom_url", "")): str,
+            vol.Required("volume", default=existing.get("volume", 60)):
+                vol.All(int, vol.Range(min=0, max=100)),
+            vol.Optional("fade_in_seconds", default=existing.get("fade_in_seconds", 0)):
+                vol.All(int, vol.Range(min=0, max=600)),
+            vol.Optional("snooze_minutes", default=existing.get("snooze_minutes", 9)):
+                vol.All(int, vol.Range(min=1, max=60)),
+            vol.Required("_action", default="save"): vol.In(action_options),
+        }
+        title_word = "Edit Alarm" if editing else "New Alarm"
+        return self.async_show_form(
+            step_id="alarm_edit",
+            data_schema=vol.Schema(schema_dict),
+            description_placeholders={
+                "title": title_word,
+                "name":  existing.get("name", "New Alarm"),
             },
         )
 
