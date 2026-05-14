@@ -19,6 +19,11 @@ from .const import (
 )
 from .coordinator import LitheAudioCoordinator
 from .lithe_client import LitheClient, LitheClientLS9
+from .alarms import (
+    SOURCE_PRESET, SOURCE_FAVOURITE, SOURCE_CHIME, SOURCE_URL,
+    REPEAT_ONE_OFF, REPEAT_DAILY, REPEAT_WEEKLY, REPEAT_MONTHLY,
+    async_setup_alarm_manager, get_manager,
+)
 from .prayer import async_register_prayer_service, async_unload_prayer
 
 _LOGGER = logging.getLogger(__name__)
@@ -116,6 +121,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await async_register_prayer_service(hass)
     await async_register_cast_group_service(hass)
 
+    # Alarm manager — single instance shared across config entries.
+    if "alarms" not in hass.data.get(DOMAIN, {}):
+        await async_setup_alarm_manager(hass)
+        _register_alarm_services(hass)
+
     # Apply Prayer Scheduler options if user has configured them via UI
     await _apply_prayer_options(hass, entry)
 
@@ -196,6 +206,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             for svc in (
                 "play_chime", "play_url", "play_favourite", "save_favourite",
                 "play_quran_juz", "play_adhan",
+                "set_volume_preset", "select_source_type",
+                "alarm_create", "alarm_update", "alarm_delete",
+                "alarm_toggle", "alarm_snooze", "alarm_dismiss",
                 "set_dsp_eq", "set_dsp_output", "set_dsp_nightmode",
                 "set_dsp_highpass", "set_dsp_balance", "set_dsp_loudness",
                 "bluetooth_pair", "bluetooth_disconnect",
@@ -252,6 +265,103 @@ def _resolve_coordinators(hass: HomeAssistant, call: ServiceCall) -> list[LitheA
     return coordinators
 
 
+def _register_alarm_services(hass: HomeAssistant) -> None:
+    """Register alarm-related services on the lithe_audio domain.
+
+    Services:
+      lithe_audio.alarm_create   — create a new alarm
+      lithe_audio.alarm_update   — modify an existing alarm
+      lithe_audio.alarm_delete   — remove an alarm
+      lithe_audio.alarm_toggle   — enable/disable
+      lithe_audio.alarm_snooze   — snooze a firing alarm
+      lithe_audio.alarm_dismiss  — stop a firing alarm
+    """
+
+    async def svc_create(call):
+        mgr = get_manager(hass)
+        if not mgr:
+            return
+        from .alarms import default_alarm
+        alarm = default_alarm()
+        # Apply user-provided fields
+        for key in (
+            "name", "time", "repeat", "days", "day_of_month", "date",
+            "speakers", "source", "preset_url", "favourite_slot",
+            "chime_slot", "custom_url", "volume", "fade_in_seconds",
+            "snooze_minutes", "enabled",
+        ):
+            if key in call.data:
+                alarm[key] = call.data[key]
+        # Type fixes
+        if "volume" in call.data:
+            alarm["volume"] = int(call.data["volume"])
+        if "fade_in_seconds" in call.data:
+            alarm["fade_in_seconds"] = int(call.data["fade_in_seconds"])
+        if "snooze_minutes" in call.data:
+            alarm["snooze_minutes"] = int(call.data["snooze_minutes"])
+        if "favourite_slot" in call.data:
+            alarm["favourite_slot"] = int(call.data["favourite_slot"])
+        if "chime_slot" in call.data:
+            alarm["chime_slot"] = int(call.data["chime_slot"])
+        if "day_of_month" in call.data:
+            alarm["day_of_month"] = int(call.data["day_of_month"])
+        alarm_id = await mgr.async_add_alarm(alarm)
+        _LOGGER.info("Created alarm %s via service", alarm_id)
+
+    async def svc_update(call):
+        mgr = get_manager(hass)
+        if not mgr:
+            return
+        alarm_id = call.data.get("id")
+        if not alarm_id:
+            _LOGGER.error("alarm_update requires 'id'")
+            return
+        patch = {k: v for k, v in call.data.items() if k != "id"}
+        await mgr.async_update_alarm(alarm_id, patch)
+
+    async def svc_delete(call):
+        mgr = get_manager(hass)
+        if not mgr:
+            return
+        alarm_id = call.data.get("id")
+        if not alarm_id:
+            return
+        await mgr.async_delete_alarm(alarm_id)
+
+    async def svc_toggle(call):
+        mgr = get_manager(hass)
+        if not mgr:
+            return
+        alarm_id = call.data.get("id")
+        enabled = bool(call.data.get("enabled", True))
+        if alarm_id:
+            await mgr.async_toggle_alarm(alarm_id, enabled)
+
+    async def svc_snooze(call):
+        mgr = get_manager(hass)
+        if not mgr:
+            return
+        alarm_id = call.data.get("id")
+        minutes = call.data.get("minutes")
+        if alarm_id:
+            await mgr.async_snooze(alarm_id, int(minutes) if minutes else None)
+
+    async def svc_dismiss(call):
+        mgr = get_manager(hass)
+        if not mgr:
+            return
+        alarm_id = call.data.get("id")
+        if alarm_id:
+            await mgr.async_dismiss(alarm_id)
+
+    hass.services.async_register(DOMAIN, "alarm_create",   svc_create)
+    hass.services.async_register(DOMAIN, "alarm_update",   svc_update)
+    hass.services.async_register(DOMAIN, "alarm_delete",   svc_delete)
+    hass.services.async_register(DOMAIN, "alarm_toggle",   svc_toggle)
+    hass.services.async_register(DOMAIN, "alarm_snooze",   svc_snooze)
+    hass.services.async_register(DOMAIN, "alarm_dismiss",  svc_dismiss)
+
+
 def _register_services(hass: HomeAssistant) -> None:
     """Register all Lithe Audio service actions."""
 
@@ -287,12 +397,54 @@ def _register_services(hass: HomeAssistant) -> None:
         await _for_each(call, lambda c: c.async_play_url(url))
 
     async def svc_play_favourite(call: ServiceCall) -> None:
+        # Slot may arrive as str from the dropdown (selector returns string
+        # values) or as int from YAML automations
         slot = int(call.data.get("slot", 1))
         await _for_each(call, lambda c: c.async_play_favourite(slot))
 
     async def svc_save_favourite(call: ServiceCall) -> None:
         slot = int(call.data.get("slot", 1))
         await _for_each(call, lambda c: c.async_save_favourite(slot))
+
+    async def svc_set_volume_preset(call: ServiceCall) -> None:
+        """Quick-pick volume 0/20/40/60/80/100."""
+        level = int(call.data.get("level", 40))
+        level = max(0, min(100, level))
+        # Each Lithe speaker exposes async_set_volume(0-100)
+        await _for_each(call, lambda c: c.async_set_volume(level))
+        _LOGGER.info("set_volume_preset → %d%%", level)
+
+    async def svc_select_source_type(call: ServiceCall) -> None:
+        """Switch active source by friendly name."""
+        # Friendly name → numeric source ID (per LUCI MB#50)
+        SOURCE_NAME_TO_ID = {
+            "no_source":   0,
+            "airplay":     1,
+            "dlna":        2,    # DMR
+            "spotify":     4,
+            "usb":         5,
+            "aux":         13,   # AUX In
+            "spdif":       14,   # SPDIF In (Optical)
+            "direct_url":  17,
+            "bluetooth":   19,
+            "cast":        24,   # Google Cast
+        }
+        source = str(call.data.get("source", "")).strip().lower()
+        src_id = SOURCE_NAME_TO_ID.get(source)
+        if src_id is None:
+            _LOGGER.warning(
+                "select_source_type: unknown source '%s' (valid: %s)",
+                source, sorted(SOURCE_NAME_TO_ID.keys()),
+            )
+            return
+        # Send MB#50 SET <id> per LUCI API
+        async def do_switch(c):
+            await c._send(0x02, 50, str(src_id))  # noqa: SLF001
+            _LOGGER.info(
+                "select_source_type: requested switch to '%s' (source=%d)",
+                source, src_id,
+            )
+        await _for_each(call, do_switch)
 
     async def svc_play_quran_juz(call: ServiceCall) -> None:
         """Play a specific Juz of the Quran via the tannoy flow."""
@@ -391,6 +543,8 @@ def _register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(DOMAIN, "save_favourite",   svc_save_favourite)
     hass.services.async_register(DOMAIN, "play_quran_juz",   svc_play_quran_juz)
     hass.services.async_register(DOMAIN, "play_adhan",       svc_play_adhan)
+    hass.services.async_register(DOMAIN, "set_volume_preset",   svc_set_volume_preset)
+    hass.services.async_register(DOMAIN, "select_source_type",  svc_select_source_type)
     hass.services.async_register(DOMAIN, "set_name",         svc_set_name)
     hass.services.async_register(DOMAIN, "set_dsp_eq",       svc_set_eq)
     hass.services.async_register(DOMAIN, "set_dsp_output",   svc_set_output)

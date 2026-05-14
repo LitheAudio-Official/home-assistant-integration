@@ -1,3 +1,79 @@
+set_volume_preset:
+  name: Set Volume (Preset)
+  description: >-
+    Quick-pick volume level. Useful for dashboards and voice assistants
+    where a slider isn't practical. The selected percentage maps directly
+    to the speaker's 0-100 volume range.
+  target:
+    entity:
+      domain: media_player
+      integration: lithe_audio
+  fields:
+    level:
+      name: Volume Level
+      description: Choose a preset volume level.
+      required: true
+      default: "40"
+      selector:
+        select:
+          options:
+            - label: "🔇 Mute (0%)"
+              value: "0"
+            - label: "🔈 Quiet (20%)"
+              value: "20"
+            - label: "🔉 Low (40%)"
+              value: "40"
+            - label: "🔊 Medium (60%)"
+              value: "60"
+            - label: "🔊 Loud (80%)"
+              value: "80"
+            - label: "📢 Max (100%)"
+              value: "100"
+
+select_source_type:
+  name: Select Source Type
+  description: >-
+    Switch the active playback source by friendly name. Lets HA
+    automations easily change input without remembering numeric IDs.
+    Note that not all source types can be activated remotely — some
+    (like Spotify Connect, AirPlay, Cast) only become active when a
+    client device connects to the speaker. This service will request
+    the source switch but the speaker may decline if no client is
+    streaming to that source.
+  target:
+    entity:
+      domain: media_player
+      integration: lithe_audio
+  fields:
+    source:
+      name: Source
+      description: Audio source to switch to.
+      required: true
+      default: "spotify"
+      selector:
+        select:
+          options:
+            - label: "Spotify Connect"
+              value: "spotify"
+            - label: "AirPlay"
+              value: "airplay"
+            - label: "Google Cast"
+              value: "cast"
+            - label: "Bluetooth"
+              value: "bluetooth"
+            - label: "Direct URL / Internet Radio"
+              value: "direct_url"
+            - label: "DLNA / DMR"
+              value: "dlna"
+            - label: "USB"
+              value: "usb"
+            - label: "AUX / Line-In"
+              value: "aux"
+            - label: "S/PDIF (Optical)"
+              value: "spdif"
+            - label: "Idle (No Source)"
+              value: "no_source"
+
 play_chime:
   name: Play Chime
   description: >-
@@ -56,13 +132,30 @@ play_favourite:
   fields:
     slot:
       name: Slot
-      description: Favourite slot (1-based).
+      description: Which saved favourite to play.
       required: true
+      default: 1
       selector:
-        number:
-          min: 1
-          max: 99
-          mode: box
+        select:
+          options:
+            - label: "Favourite 1"
+              value: "1"
+            - label: "Favourite 2"
+              value: "2"
+            - label: "Favourite 3"
+              value: "3"
+            - label: "Favourite 4"
+              value: "4"
+            - label: "Favourite 5"
+              value: "5"
+            - label: "Favourite 6"
+              value: "6"
+            - label: "Favourite 7"
+              value: "7"
+            - label: "Favourite 8"
+              value: "8"
+            - label: "Favourite 9"
+              value: "9"
 
 save_favourite:
   name: Save Current to Favourite
@@ -394,3 +487,278 @@ set_prayer_schedule:
       required: true
       selector:
         object:
+
+# ── Alarms ─────────────────────────────────────────────────────────────────
+
+alarm_create:
+  name: Create Alarm
+  description: >-
+    Create a new alarm that triggers audio playback on one or more
+    Lithe Audio speakers at a scheduled time. Supports one-off, daily,
+    weekly (with day-of-week toggles), and monthly schedules. Audio
+    source can be a preset URL (Adhan/Quran), saved favourite, embedded
+    chime, or custom HTTP URL. Optional volume fade-in over N seconds
+    for gentle wake-ups.
+  fields:
+    name:
+      name: Alarm Name
+      description: Friendly name for the alarm (e.g. "Weekday Wakeup").
+      required: true
+      example: "Weekday Wakeup"
+      selector:
+        text:
+    time:
+      name: Time
+      description: Time of day to fire (24-hour HH:MM).
+      required: true
+      example: "06:30"
+      selector:
+        time:
+    repeat:
+      name: Repeat Mode
+      description: How often the alarm fires.
+      required: true
+      default: "daily"
+      selector:
+        select:
+          options:
+            - label: "One-off (single date)"
+              value: "one_off"
+            - label: "Daily"
+              value: "daily"
+            - label: "Weekly (specific days)"
+              value: "weekly"
+            - label: "Monthly (day of month)"
+              value: "monthly"
+    days:
+      name: Days of Week
+      description: >-
+        For weekly repeat — pick which days to fire. Ignored for other
+        repeat modes.
+      required: false
+      default: ["mon","tue","wed","thu","fri"]
+      selector:
+        select:
+          multiple: true
+          options:
+            - label: "Monday"
+              value: "mon"
+            - label: "Tuesday"
+              value: "tue"
+            - label: "Wednesday"
+              value: "wed"
+            - label: "Thursday"
+              value: "thu"
+            - label: "Friday"
+              value: "fri"
+            - label: "Saturday"
+              value: "sat"
+            - label: "Sunday"
+              value: "sun"
+    day_of_month:
+      name: Day of Month
+      description: For monthly repeat — which day of the month (1-31).
+      required: false
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 31
+          mode: box
+    date:
+      name: Date
+      description: For one-off — the date (YYYY-MM-DD).
+      required: false
+      selector:
+        date:
+    speakers:
+      name: Speakers
+      description: >-
+        List of Lithe Audio speaker IP addresses (or hostnames) to play
+        the alarm on. Multi-room: provide more than one.
+      required: true
+      selector:
+        text:
+          multiple: true
+    source:
+      name: Audio Source
+      description: What to play when the alarm fires.
+      required: true
+      default: "preset"
+      selector:
+        select:
+          options:
+            - label: "Preset URL (Adhan, Quran)"
+              value: "preset"
+            - label: "Saved Favourite (1-9)"
+              value: "favourite"
+            - label: "Embedded Chime (1-10)"
+              value: "chime"
+            - label: "Custom HTTP URL"
+              value: "url"
+    preset_url:
+      name: Preset URL
+      description: URL of an Adhan/Quran preset audio file (used when source = preset).
+      required: false
+      example: "https://www.islamcan.com/audio/adhan/azan1.mp3"
+      selector:
+        text:
+    favourite_slot:
+      name: Favourite Slot
+      description: Saved favourite to play (1-9, used when source = favourite).
+      required: false
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 9
+          mode: box
+    chime_slot:
+      name: Chime Slot
+      description: Embedded chime to play (1-10, used when source = chime).
+      required: false
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 10
+          mode: box
+    custom_url:
+      name: Custom URL
+      description: Any HTTP/HTTPS audio URL (used when source = url).
+      required: false
+      example: "http://192.168.1.10/wake.mp3"
+      selector:
+        text:
+    volume:
+      name: Volume
+      description: Playback volume (0-100).
+      required: false
+      default: 60
+      selector:
+        number:
+          min: 0
+          max: 100
+          mode: slider
+    fade_in_seconds:
+      name: Fade-In Duration
+      description: >-
+        Gradually ramp volume from 0 to target over N seconds. Set to 0
+        to start at full volume. 30-60s gives a gentle wake-up.
+      required: false
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 600
+          unit_of_measurement: "seconds"
+          mode: box
+    snooze_minutes:
+      name: Default Snooze Minutes
+      description: How long to delay when snoozed (1-60 minutes).
+      required: false
+      default: 9
+      selector:
+        number:
+          min: 1
+          max: 60
+          mode: box
+    enabled:
+      name: Enabled
+      description: Whether the alarm is active on creation.
+      required: false
+      default: true
+      selector:
+        boolean:
+
+alarm_update:
+  name: Update Alarm
+  description: Modify an existing alarm. Provide its id and any fields to change.
+  fields:
+    id:
+      name: Alarm ID
+      description: The id returned by alarm_create (e.g. "alarm_a3b9c2f1").
+      required: true
+      selector:
+        text:
+    name:
+      name: Alarm Name
+      required: false
+      selector:
+        text:
+    time:
+      name: Time
+      required: false
+      selector:
+        time:
+    enabled:
+      name: Enabled
+      required: false
+      selector:
+        boolean:
+    volume:
+      name: Volume
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 100
+          mode: slider
+
+alarm_delete:
+  name: Delete Alarm
+  description: Remove an alarm permanently.
+  fields:
+    id:
+      name: Alarm ID
+      required: true
+      selector:
+        text:
+
+alarm_toggle:
+  name: Toggle Alarm
+  description: Enable or disable an alarm without deleting it.
+  fields:
+    id:
+      name: Alarm ID
+      required: true
+      selector:
+        text:
+    enabled:
+      name: Enabled
+      required: true
+      selector:
+        boolean:
+
+alarm_snooze:
+  name: Snooze Alarm
+  description: >-
+    Stop a currently-firing alarm and reschedule it to fire again after
+    the specified minutes. If minutes is omitted, uses the alarm's
+    default snooze duration.
+  fields:
+    id:
+      name: Alarm ID
+      required: true
+      selector:
+        text:
+    minutes:
+      name: Snooze Minutes
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 60
+          mode: box
+
+alarm_dismiss:
+  name: Dismiss Alarm
+  description: >-
+    Stop a currently-firing alarm without rescheduling. The alarm
+    remains enabled and will fire again at its next scheduled time.
+  fields:
+    id:
+      name: Alarm ID
+      required: true
+      selector:
+        text:

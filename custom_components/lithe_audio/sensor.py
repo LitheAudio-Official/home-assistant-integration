@@ -33,6 +33,7 @@ async def async_setup_entry(
         LitheRSSISensor(coordinator, entry),
         LitheNetworkStatusSensor(coordinator, entry),
         LitheSpeakerStatusSensor(coordinator, entry),
+        LitheNextAlarmSensor(coordinator, entry),
     ])
 
 
@@ -246,3 +247,51 @@ class LithePlayerRoleSensor(_LitheBaseSensor):
     @property
     def native_value(self) -> str:
         return self._client.state.player_role or "Unknown"
+
+
+class LitheNextAlarmSensor(_LitheBaseSensor):
+    """Shows the next alarm fire time across ALL configured alarms.
+
+    This is shared across all speakers — every Lithe speaker shows the
+    same next-alarm state since alarms are a system-wide concept. The
+    sensor is registered against each speaker entity so it appears on
+    the device card; HA dedupes via unique_id.
+    """
+
+    _attr_translation_key = "next_alarm"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_icon = "mdi:alarm"
+
+    def __init__(self, coordinator: LitheAudioCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_name = "Next Alarm"
+        self._attr_unique_id = f"{entry.data['host']}_{entry.entry_id}_next_alarm"
+
+    @property
+    def native_value(self):
+        from .alarms import get_manager
+        mgr = get_manager(self.hass)
+        if not mgr:
+            return None
+        nxt = mgr.next_alarm()
+        if not nxt:
+            return None
+        _, dt = nxt
+        return dt
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        from .alarms import get_manager
+        mgr = get_manager(self.hass)
+        if not mgr:
+            return {}
+        nxt = mgr.next_alarm()
+        attrs = {"alarm_count": len(mgr.list_alarms())}
+        if nxt:
+            name, _ = nxt
+            attrs["next_alarm_name"] = name
+        return attrs
+
+    @property
+    def available(self) -> bool:
+        return True   # Sensor always available; value may be None
