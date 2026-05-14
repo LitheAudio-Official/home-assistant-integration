@@ -96,12 +96,38 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
 
         self._attr_unique_id = f"{entry.data['host']}_{entry.entry_id}_player"
 
-        # Build source list from product capability matrix
+        # Build source list from product capability matrix.
+        #
+        # We filter to only sources that can be ACTIVATED via MB#50 SET.
+        # Streaming-app sources (Spotify Connect, AirPlay, Cast, etc.)
+        # are passive — they become active only when an external client
+        # device starts streaming to them. Showing them in select_source
+        # produces a non-working dropdown (looks like a bug), so we omit
+        # them. They still appear in `source_name` attribute when active.
+        # (This matches the Sonos integration pattern — Sonos only shows
+        # locally-switchable sources in its source picker.)
+        _ACTIVATABLE_SOURCES = {
+            0,   # No Source (releases current)
+            5,   # USB
+            13,  # AUX In
+            14,  # SPDIF In
+            17,  # Direct URL
+            19,  # Bluetooth
+            23,  # Favourites
+        }
         src_ids = PRODUCT_SOURCES.get(self._product, list(SOURCES.keys()))
-        self._source_list = [SOURCES[s] for s in src_ids
-                             if s in SOURCES and SOURCES[s] != "No Source"]
-        # Reverse-lookup name → id
+        self._source_list = [
+            SOURCES[s] for s in src_ids
+            if s in SOURCES
+            and s in _ACTIVATABLE_SOURCES
+            and SOURCES[s] != "No Source"
+        ]
+        # Reverse-lookup name → id (incl. passive sources so we can
+        # display them as source_name when they activate themselves)
         self._source_id_by_name = {SOURCES[s]: s for s in src_ids if s in SOURCES}
+
+        # Sonos-style grouping — list of joined entity_ids
+        self._group_members: list[str] = []
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -136,6 +162,8 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
             | MediaPlayerEntityFeature.BROWSE_MEDIA
             | MediaPlayerEntityFeature.SHUFFLE_SET
             | MediaPlayerEntityFeature.REPEAT_SET
+            | MediaPlayerEntityFeature.GROUPING
+            | MediaPlayerEntityFeature.SELECT_SOUND_MODE
         )
         # MEDIA_ANNOUNCE was added in HA 2022.12 — guard the import
         ann = getattr(MediaPlayerEntityFeature, "MEDIA_ANNOUNCE", None)
@@ -353,17 +381,102 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
         """Set repeat mode (off / all / one)."""
         await self._client.async_set_repeat(str(repeat))
 
+    async def async_join_players(self, group_members: list[str]) -> None:
+        """Group this speaker with others (Sonos-style media_player.join).
+
+        This creates an application-level group where each member plays
+        the same content independently (no firmware-level clock sync).
+        For tight multi-room sync, use Google Cast Groups via Browse
+        Media or the Cast integration directly.
+
+        Note: Lithe firmware doesn't support master/slave grouping over
+        LUCI (that's a Cast feature), so we implement this as a soft
+        group — the speaker remembers its members in state attributes,
+        and future play_media calls fan out to all members.
+        """
+        # Store member entity_ids in extra_state_attributes so HA's
+        # standard grouping UI shows them as joined.
+        self._group_members = list(group_members)
+        _LOGGER.info(
+            "%s joined with %d members: %s",
+            self.entity_id, len(group_members), group_members,
+        )
+        # No firmware-level action needed — group state is local.
+        self.async_write_ha_state()
+
+    async def async_unjoin_player(self) -> None:
+        """Remove this speaker from any current group."""
+        self._group_members = []
+        _LOGGER.info("%s unjoined from group", self.entity_id)
+        self.async_write_ha_state()
+
+    @property
+    def group_members(self) -> list[str]:
+        """List of entity_ids currently grouped with this speaker."""
+        return getattr(self, "_group_members", []) or []
+
+    # ── Sound mode (EQ preset, Denon-style) ───────────────────────────
+
+    @property
+    def sound_mode(self) -> str | None:
+        """Current EQ preset, exposed as a Denon-style sound_mode."""
+        from .const import EQ_PRESETS
+        idx = getattr(self._client.state, "dsp_eq", None)
+        if idx is not None and 0 <= idx < len(EQ_PRESETS):
+            return EQ_PRESETS[idx]
+        return None
+
+    @property
+    def sound_mode_list(self) -> list[str] | None:
+        from .const import EQ_PRESETS
+        return list(EQ_PRESETS)
+
+    async def async_select_sound_mode(self, sound_mode: str) -> None:
+        """Set EQ preset by friendly name (Denon-style sound_mode)."""
+        from .const import EQ_PRESETS, DSP_EQ
+        if sound_mode not in EQ_PRESETS:
+            _LOGGER.warning(
+                "select_sound_mode: unknown mode %r (available: %s)",
+                sound_mode, EQ_PRESETS,
+            )
+            return
+        idx = EQ_PRESETS.index(sound_mode)
+        _LOGGER.info("select_sound_mode: %s (idx=%d)", sound_mode, idx)
+        await self._client.async_dsp_command(DSP_EQ, idx)
+
     async def async_select_source(self, source: str) -> None:
-        """Switch source. Most sources require external triggering (Spotify Connect,
-        AirPlay, Cast etc) but Bluetooth / AUX / SPDIF / Favourites can be set."""
+        """Switch source by friendly name.
+
+        Only sources in our self._source_list (locally activatable inputs)
+        are selectable here. Passive sources (Spotify Connect, AirPlay,
+        Cast) cannot be activated via this method — they require an
+        external client to start streaming to them.
+
+        Bluetooth: activates the radio if a paired device is in range.
+        AUX/SPDIF: switches to the analog/optical input.
+        USB: plays from inserted USB.
+        Favourites: replays the last/first saved favourite.
+        Direct URL: not normally selected directly — use play_media instead.
+        """
+        import asyncio
         src_id = self._source_id_by_name.get(source)
         if src_id is None:
-            _LOGGER.warning("Unknown source: %s", source)
+            _LOGGER.warning(
+                "select_source: unknown source %r (available: %s)",
+                source, self._source_list,
+            )
             return
 
-        # Send MB#50 SET — speaker will switch if the source allows it.
-        # Use string ID payload per LUCI API.
+        _LOGGER.info("select_source: switching to %s (id=%d)", source, src_id)
         await self._client._send(0x02, 50, str(src_id))  # noqa: SLF001
+
+        # Refresh source/play state after a short delay so HA reflects
+        # the switch (some firmwares delay the MB#50 push by 500-1000ms)
+        async def _refresh():
+            await asyncio.sleep(0.8)
+            await self._client._send(0x01, 50, "")  # MB#50 GET
+            await self._client._send(0x01, 51, "")  # MB#51 GET (play state)
+        self.hass.async_create_task(_refresh())
 
     async def async_play_media(
         self, media_type: str, media_id: str, **kwargs: Any
@@ -465,9 +578,54 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
         # Regular play (no announce) — direct URL via MB#41 PLAYITEM:DIRECT
         if media_type in _PLAYABLE_TYPES or media_id.startswith(("http://", "https://")):
             await self._client.async_play_url(media_id)
+            # Fan out to grouped members (Bluesound/Sonos pattern: when
+            # speakers are joined, the same URL plays on each member).
+            # Each member is its own LUCI client so we tell them all to
+            # PLAYITEM:DIRECT with the same URL.
+            await self._fanout_to_members("async_play_url", media_id)
             return
 
         _LOGGER.warning("Unsupported play_media: type=%s id=%s", media_type, media_id)
+
+    async def _fanout_to_members(self, method_name: str, *args) -> None:
+        """Call a client method on every grouped member in parallel.
+
+        Looks up each member entity_id via the entity registry, finds
+        its coordinator, and invokes coord.client.<method_name>(*args).
+        Mimics Sonos's "fan-out from coordinator to followers" pattern.
+        """
+        members = self.group_members
+        if not members:
+            return
+        try:
+            from homeassistant.helpers import entity_registry as er
+            ent_reg = er.async_get(self.hass)
+        except Exception:
+            return
+        bucket = self.hass.data.get(DOMAIN, {})
+        import asyncio
+
+        async def call_one(entity_id: str):
+            if entity_id == self.entity_id:
+                return  # skip self - already played above
+            ent = ent_reg.async_get(entity_id)
+            if not ent or not ent.config_entry_id:
+                return
+            entry_data = bucket.get(ent.config_entry_id)
+            if not isinstance(entry_data, dict):
+                return
+            coord = entry_data.get(DATA_COORDINATOR) or entry_data.get("coordinator")
+            if not coord:
+                return
+            try:
+                fn = getattr(coord.client, method_name, None)
+                if fn:
+                    await fn(*args)
+            except Exception as e:
+                _LOGGER.warning("Group fan-out %s on %s failed: %s",
+                                method_name, entity_id, e)
+
+        await asyncio.gather(*(call_one(m) for m in members))
 
     async def async_browse_media(
         self,

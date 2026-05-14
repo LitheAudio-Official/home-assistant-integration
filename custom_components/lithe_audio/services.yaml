@@ -1086,3 +1086,137 @@ fav_delete:
 fav_list:
   name: List HA Favourites
   description: Returns all 9 favourite slots and their current contents.
+
+# ── Snapshot / Restore (Sonos pattern) ────────────────────────────────────
+
+snapshot:
+  name: Snapshot State
+  description: >-
+    Capture current playback state (volume, source, play state, URL) of
+    selected speakers. Use with `restore` for TTS workflows: snapshot →
+    play announcement → restore.
+  fields:
+    name:
+      name: Snapshot Name
+      description: Optional name for the snapshot (lets multiple coexist). Default is "default".
+      required: false
+      default: "default"
+      selector:
+        text:
+    speakers:
+      name: Speakers
+      description: List of speaker IPs or entity_ids (default is all connected).
+      required: false
+      selector:
+        text:
+          multiple: true
+
+restore:
+  name: Restore State
+  description: Restore a previously-captured snapshot.
+  fields:
+    name:
+      name: Snapshot Name
+      required: false
+      default: "default"
+      selector:
+        text:
+    delete:
+      name: Delete after restore
+      description: If true, the snapshot is removed after restoration (one-shot).
+      required: false
+      default: false
+      selector:
+        boolean:
+
+# ── Sleep Timer (Bluesound pattern) ───────────────────────────────────────
+
+set_sleep_timer:
+  name: Set Sleep Timer
+  description: >-
+    Stop playback on selected speakers after a delay. Optionally fade
+    volume to silent over `fade_seconds` before stopping.
+  fields:
+    speakers:
+      name: Speakers
+      description: List of speaker IPs or entity_ids (default is all connected).
+      required: false
+      selector:
+        text:
+          multiple: true
+    minutes:
+      name: Minutes
+      description: Stop after this many minutes.
+      required: true
+      default: 30
+      selector:
+        number:
+          min: 1
+          max: 480
+          unit_of_measurement: minutes
+          mode: box
+    fade_seconds:
+      name: Fade Duration
+      description: Fade volume to 0 over this many seconds before stopping (0 = no fade).
+      required: false
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 600
+          unit_of_measurement: seconds
+          mode: box
+
+clear_sleep_timer:
+  name: Clear Sleep Timer
+  description: Cancel an active sleep timer.
+  fields:
+    speakers:
+      name: Speakers
+      required: false
+      selector:
+        text:
+          multiple: true
+
+# ── Tannoy (PA override, low-level) ───────────────────────────────────────
+
+tannoy:
+  name: Tannoy / PA Override
+  description: >-
+    Low-level announcement primitive: save current state, switch to a
+    URL, then optionally restore. Most users should use lithe_audio.announce
+    instead; this is for advanced workflows that need explicit start/end
+    control (e.g. multi-step announcements).
+  fields:
+    mode:
+      name: Mode
+      description: "'start' to begin override, 'end' to restore."
+      required: true
+      default: "start"
+      selector:
+        select:
+          options:
+            - "start"
+            - "end"
+    message:
+      name: URL
+      description: HTTP(S) audio URL (start mode only).
+      required: false
+      selector:
+        text:
+    volume:
+      name: Volume
+      required: false
+      default: 80
+      selector:
+        number:
+          min: 0
+          max: 100
+          mode: slider
+    speakers:
+      name: Speakers
+      description: List of speaker IPs or entity_ids.
+      required: true
+      selector:
+        text:
+          multiple: true

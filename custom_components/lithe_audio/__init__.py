@@ -152,6 +152,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         register_tannoy_service(hass)
         hass.data[DOMAIN]["_tannoy_registered"] = True
 
+    # Snapshot / restore / sleep-timer services (Sonos + Bluesound patterns)
+    if not hass.data.get(DOMAIN, {}).get("_snapshot_registered"):
+        from .snapshot import register_snapshot_services
+        register_snapshot_services(hass)
+        hass.data[DOMAIN]["_snapshot_registered"] = True
+
     # Lovelace card auto-registration (idempotent, safe to call repeatedly)
     if not hass.data.get(DOMAIN, {}).get("_card_registered"):
         try:
@@ -247,6 +253,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "group_create", "group_update", "group_delete",
                 "announce", "broadcast", "doorbell",
                 "fav_save", "fav_play", "fav_list", "fav_delete",
+                "snapshot", "restore",
+                "set_sleep_timer", "clear_sleep_timer",
+                "tannoy",
                 "set_dsp_eq", "set_dsp_output", "set_dsp_nightmode",
                 "set_dsp_highpass", "set_dsp_balance", "set_dsp_loudness",
                 "bluetooth_pair", "bluetooth_disconnect",
