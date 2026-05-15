@@ -401,21 +401,7 @@ class LitheClient:
         MB#42 (Now Playing) when the source switches to Direct URL, but
         we GET it explicitly as a safety net for firmware that delays
         the push.
-
-        Source ownership caveat: when source is held by Spotify Connect
-        (4), AirPlay (1), or Cast (24), PLAYITEM:DIRECT is silently
-        ignored — no MB#10 fires, no source change, no sound. Stop
-        playback from the external app first to release the source.
         """
-        BLOCKING_SOURCES = {1: "AirPlay", 4: "Spotify Connect", 24: "Google Cast"}
-        src = self.state.source_id
-        if src in BLOCKING_SOURCES:
-            _LOGGER.warning(
-                "PLAY_URL-BLOCKED: source=%d (%s) holds the audio path. "
-                "PLAYITEM:DIRECT will be silently ignored — no sound. "
-                "Stop %s in the source app first to release the speaker.",
-                src, BLOCKING_SOURCES[src], BLOCKING_SOURCES[src],
-            )
         await self._send(0x02, MB_BROWSE, f"PLAYITEM:DIRECT:{url}")
         # Store the URL so the media player can display it as a friendly
         # title while metadata is being fetched
@@ -501,19 +487,7 @@ class LitheClient:
         sock_state = "no_writer" if self._writer is None else (
             "closing" if self._writer.is_closing() else "open"
         )
-        # Sources known to lock the audio path with no LUCI-side release:
-        # 1=AirPlay, 4=Spotify Connect, 24=Cast. If any of these are
-        # active, the chime / PLAYITEM:DIRECT will return SUCCESS but
-        # produce no sound — warn the user clearly.
-        BLOCKING_SOURCES = {1: "AirPlay", 4: "Spotify Connect", 24: "Google Cast"}
-        src = self.state.source_id
-        if src in BLOCKING_SOURCES:
-            _LOGGER.warning(
-                "CHIME-BLOCKED: source=%d (%s) is holding the audio path. "
-                "MB#80 will return SUCCESS but no sound. To play the chime, "
-                "stop %s playback from the source app first.",
-                src, BLOCKING_SOURCES[src], BLOCKING_SOURCES[src],
-            )
+
         _LOGGER.info(
             "CHIME-DIAG slot=%d sock=%s connected=%s play_state=%s source=%d",
             n, sock_state, self.state.connected,
@@ -522,11 +496,38 @@ class LitheClient:
 
         try:
             # MB#80 SET "play N" — the documented audio cue trigger.
-            # The newer firmware will respond via MB#82 AUDIOCUE_START,
-            # which our _dispatch_rx handler answers with AUDIOPATH_OPEN
-            # to permit playback.
+            #
+            # Protocol behavior on this firmware (PRO2 CR443GP_3713):
+            #   - Speaker sends MB#80 status=1 (empty payload) as the
+            #     "cue starting" notification — NOT MB#82.
+            #   - MB#82 AUDIOCUE_START is documented but is NOT pushed
+            #     by this firmware revision. We previously waited for
+            #     it which caused 4-second silent chime failures.
+            #   - The audio path must be opened by sending
+            #     MB#82 SET "AUDIOPATH_OPEN" proactively (not in
+            #     response to a notification that never arrives).
+            #
+            # So we send both: MB#80 to trigger the cue, then MB#82
+            # AUDIOPATH_OPEN to authorise playback. The handler in
+            # _dispatch_rx still answers MB#82 AUDIOCUE_START if a
+            # newer firmware revision does emit it, but we don't depend
+            # on it.
             await self._send(0x02, MB_CHIME, f"play {n}")
             self._last_chime_mbid = MB_CHIME
+
+            # Small delay so the speaker processes MB#80 before we
+            # send MB#82 — empirically 50ms is sufficient.
+            await asyncio.sleep(0.05)
+
+            # Proactively send AUDIOPATH_OPEN — this is what newer
+            # firmware would have asked for via MB#82 push. Sending it
+            # unsolicited is safe; the speaker either acts on it or
+            # ignores it as already-open.
+            await self._send(0x02, MB_AUDIOCUE, "AUDIOPATH_OPEN")
+            _LOGGER.debug(
+                "CHIME: sent MB#82 AUDIOPATH_OPEN proactively (this firmware "
+                "does not push MB#82 AUDIOCUE_START)"
+            )
         except Exception as e:
             _LOGGER.warning("Chime send failed: %s", e)
 
