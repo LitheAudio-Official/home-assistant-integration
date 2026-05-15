@@ -401,7 +401,21 @@ class LitheClient:
         MB#42 (Now Playing) when the source switches to Direct URL, but
         we GET it explicitly as a safety net for firmware that delays
         the push.
+
+        Source ownership caveat: when source is held by Spotify Connect
+        (4), AirPlay (1), or Cast (24), PLAYITEM:DIRECT is silently
+        ignored — no MB#10 fires, no source change, no sound. Stop
+        playback from the external app first to release the source.
         """
+        BLOCKING_SOURCES = {1: "AirPlay", 4: "Spotify Connect", 24: "Google Cast"}
+        src = self.state.source_id
+        if src in BLOCKING_SOURCES:
+            _LOGGER.warning(
+                "PLAY_URL-BLOCKED: source=%d (%s) holds the audio path. "
+                "PLAYITEM:DIRECT will be silently ignored — no sound. "
+                "Stop %s in the source app first to release the speaker.",
+                src, BLOCKING_SOURCES[src], BLOCKING_SOURCES[src],
+            )
         await self._send(0x02, MB_BROWSE, f"PLAYITEM:DIRECT:{url}")
         # Store the URL so the media player can display it as a friendly
         # title while metadata is being fetched
@@ -469,13 +483,37 @@ class LitheClient:
         On older firmware without MB#82, MB#80 still works but plays
         silently if no other source has released the audio path.
 
-        Slots 1-10 are supported via MB#80 per spec §9.33.
+        Source ownership caveat (per packet evidence 2026-05):
+          When source is held by Spotify Connect (4), AirPlay (1),
+          or Cast (24), MB#80 still returns SUCCESS in MB#82 but no
+          sound is produced — the audio path is locked by the
+          streaming client. Releasing requires the EXTERNAL client
+          to disconnect (STOP/PAUSE via LUCI does NOT release these
+          sources). We log a warning when this state is detected.
+
+        Slots are 1-15 depending on speaker model. Spec §9.33 documents
+        1-10 but PRO2 firmware extends this to 1-15 (per Lithe support).
+        We clamp to 1-15; sending an unsupported slot returns FAILURE
+        but doesn't break the connection.
         """
-        n = max(1, min(10, int(chime_number)))
+        n = max(1, min(15, int(chime_number)))
         now = asyncio.get_event_loop().time()
         sock_state = "no_writer" if self._writer is None else (
             "closing" if self._writer.is_closing() else "open"
         )
+        # Sources known to lock the audio path with no LUCI-side release:
+        # 1=AirPlay, 4=Spotify Connect, 24=Cast. If any of these are
+        # active, the chime / PLAYITEM:DIRECT will return SUCCESS but
+        # produce no sound — warn the user clearly.
+        BLOCKING_SOURCES = {1: "AirPlay", 4: "Spotify Connect", 24: "Google Cast"}
+        src = self.state.source_id
+        if src in BLOCKING_SOURCES:
+            _LOGGER.warning(
+                "CHIME-BLOCKED: source=%d (%s) is holding the audio path. "
+                "MB#80 will return SUCCESS but no sound. To play the chime, "
+                "stop %s playback from the source app first.",
+                src, BLOCKING_SOURCES[src], BLOCKING_SOURCES[src],
+            )
         _LOGGER.info(
             "CHIME-DIAG slot=%d sock=%s connected=%s play_state=%s source=%d",
             n, sock_state, self.state.connected,
@@ -598,7 +636,9 @@ class LitheClient:
         """
         while len(self._buf) >= 10:
             try:
-                data_len = struct.unpack_from(">H", self._buf, 8)[0]
+                # DataLen is little-endian on the wire per LUCI spec §10.2
+                # (matches TX which uses struct.pack("<H...", ...))
+                data_len = struct.unpack_from("<H", self._buf, 8)[0]
             except struct.error:
                 break
 
@@ -616,10 +656,12 @@ class LitheClient:
             if len(self._buf) < total:
                 break  # need more bytes
 
-            # Sanity-check: byte after this packet should be the high byte of
-            # the next packet's RemoteID. Speakers use either 0x0000 (so high
-            # byte 0x00) or 0xAAAA (high byte 0xAA). Anything else means we
-            # mis-parsed the current packet's DataLen — resync.
+            # Sanity-check: byte after this packet should be either:
+            #   - the LUCI 0x00 packet terminator (per vendor §10.2), OR
+            #   - the start of the next packet's RemoteID (0xAA = high byte
+            #     of 0xAAAA, or 0x00 = high byte of 0x0000).
+            # 0x00 covers both the terminator AND a zero-RID start, so the
+            # check is essentially "0x00 or 0xAA".
             need_sanity = total < len(self._buf)
             if need_sanity:
                 next_byte = self._buf[total]
@@ -632,12 +674,12 @@ class LitheClient:
                     self._resync_buffer()
                     continue
 
-            # Header fields
+            # Header fields — all little-endian per spec
             try:
-                remote_id = struct.unpack_from(">H", self._buf, 0)[0]
+                remote_id = struct.unpack_from("<H", self._buf, 0)[0]
             except struct.error:
                 remote_id = 0
-            mbid = struct.unpack_from(">H", self._buf, 3)[0]
+            mbid = struct.unpack_from("<H", self._buf, 3)[0]
 
             # Sanity: MBID must be in the valid LUCI range. Per spec the
             # highest documented MB is around 600 (timezone is 573, cast
@@ -657,11 +699,21 @@ class LitheClient:
             except Exception:
                 payload = ""
 
-            # Consume this packet — do NOT skip trailing NUL.
-            # The speaker's packet stream is back-to-back; any byte after
-            # `total` is part of the next packet's RID. Skipping bytes here
-            # offsets the parser forever.
-            self._buf = self._buf[total:]
+            # Consume this packet. Per LUCI spec §10.2, packets MAY be
+            # followed by a 0x00 terminator byte (vendor's Python example
+            # appends one on TX). If present, skip it too so the parser
+            # aligns on the next packet's RemoteID. Without this skip,
+            # the 0x00 would be mis-read as the low byte of the next RID
+            # which is valid for RID=0x0000 (some firmware) but breaks
+            # for RID=0xAAAA — sanity check would resync wastefully.
+            consume_to = total
+            if total < len(self._buf) and self._buf[total] == 0x00:
+                # Peek further: if byte AFTER terminator looks like the
+                # start of a new packet (0xAA = RID low byte of 0xAAAA,
+                # or another 0x00 = RID=0x0000), eat the terminator.
+                if total + 1 >= len(self._buf) or self._buf[total + 1] in (0x00, 0xAA):
+                    consume_to = total + 1
+            self._buf = self._buf[consume_to:]
             # Reset resync counter — we successfully parsed a packet
             self._resync_count = 0
 
@@ -1333,18 +1385,31 @@ class LitheClientLS9(LitheClient):
                     buf += chunk
                     while len(buf) >= 10:
                         try:
-                            data_len = struct.unpack_from(">H", buf, 8)[0]
+                            # DataLen LE per LUCI spec §10.2
+                            data_len = struct.unpack_from("<H", buf, 8)[0]
                         except struct.error:
                             break
                         total = 10 + data_len
                         if len(buf) < total:
                             break
-                        r_mbid = struct.unpack_from(">H", buf, 3)[0]
+                        # MBID LE per LUCI spec §10.2
+                        r_mbid = struct.unpack_from("<H", buf, 3)[0]
                         r_payload = buf[10:10 + data_len].decode("utf-8", "replace").rstrip("\x00")
-                        buf = buf[total:]
+                        # Tolerate the LUCI 0x00 packet terminator after each
+                        # packet (vendor §10.2). Without this, the next packet
+                        # parse can start one byte offset.
+                        skip = total
+                        if total < len(buf) and buf[total] == 0x00:
+                            skip = total + 1
+                        buf = buf[skip:]
+                        # ALWAYS dispatch — even MB#10 needs _handle_push so
+                        # it can send the MB#11=1 grant. Previously this was
+                        # suppressed which broke source switching on LS9.
+                        self._handle_push(r_mbid, r_payload)
+                        # Caller wants non-grant responses (so it can see
+                        # the actual reply, not the auth handshake)
                         if r_mbid != MB_PLAYBACK_AUTH:
                             responses.append((r_mbid, r_payload))
-                            self._handle_push(r_mbid, r_payload)
                 except asyncio.TimeoutError:
                     if responses:
                         break
