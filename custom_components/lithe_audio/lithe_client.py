@@ -636,9 +636,13 @@ class LitheClient:
         """
         while len(self._buf) >= 10:
             try:
-                # DataLen is little-endian on the wire per LUCI spec §10.2
-                # (matches TX which uses struct.pack("<H...", ...))
-                data_len = struct.unpack_from("<H", self._buf, 8)[0]
+                # Empirical: this firmware sends DataLen as BIG-endian
+                # on the wire, despite the vendor Python example showing
+                # struct.pack("<H...", ...). v1.1.83 switched to <H and
+                # broke parsing entirely (every packet became
+                # "Implausible DataLen=N" → resync → disconnect cycle).
+                # Reverted to >H which matches actual byte order on wire.
+                data_len = struct.unpack_from(">H", self._buf, 8)[0]
             except struct.error:
                 break
 
@@ -660,8 +664,6 @@ class LitheClient:
             #   - the LUCI 0x00 packet terminator (per vendor §10.2), OR
             #   - the start of the next packet's RemoteID (0xAA = high byte
             #     of 0xAAAA, or 0x00 = high byte of 0x0000).
-            # 0x00 covers both the terminator AND a zero-RID start, so the
-            # check is essentially "0x00 or 0xAA".
             need_sanity = total < len(self._buf)
             if need_sanity:
                 next_byte = self._buf[total]
@@ -674,12 +676,12 @@ class LitheClient:
                     self._resync_buffer()
                     continue
 
-            # Header fields — all little-endian per spec
+            # Header fields — empirical wire format is big-endian
             try:
-                remote_id = struct.unpack_from("<H", self._buf, 0)[0]
+                remote_id = struct.unpack_from(">H", self._buf, 0)[0]
             except struct.error:
                 remote_id = 0
-            mbid = struct.unpack_from("<H", self._buf, 3)[0]
+            mbid = struct.unpack_from(">H", self._buf, 3)[0]
 
             # Sanity: MBID must be in the valid LUCI range. Per spec the
             # highest documented MB is around 600 (timezone is 573, cast
@@ -699,21 +701,14 @@ class LitheClient:
             except Exception:
                 payload = ""
 
-            # Consume this packet. Per LUCI spec §10.2, packets MAY be
-            # followed by a 0x00 terminator byte (vendor's Python example
-            # appends one on TX). If present, skip it too so the parser
-            # aligns on the next packet's RemoteID. Without this skip,
-            # the 0x00 would be mis-read as the low byte of the next RID
-            # which is valid for RID=0x0000 (some firmware) but breaks
-            # for RID=0xAAAA — sanity check would resync wastefully.
-            consume_to = total
-            if total < len(self._buf) and self._buf[total] == 0x00:
-                # Peek further: if byte AFTER terminator looks like the
-                # start of a new packet (0xAA = RID low byte of 0xAAAA,
-                # or another 0x00 = RID=0x0000), eat the terminator.
-                if total + 1 >= len(self._buf) or self._buf[total + 1] in (0x00, 0xAA):
-                    consume_to = total + 1
-            self._buf = self._buf[consume_to:]
+            # Consume this packet — do NOT skip trailing NUL.
+            # The speaker's packet stream is back-to-back; any byte after
+            # `total` is part of the next packet's RID. Skipping bytes here
+            # offsets the parser forever.
+            # (v1.1.83 tried adding conditional terminator skip but combined
+            # with the failed endianness flip it caused complete parser
+            # failure. Reverted to original behaviour which is known good.)
+            self._buf = self._buf[total:]
             # Reset resync counter — we successfully parsed a packet
             self._resync_count = 0
 
@@ -1385,23 +1380,17 @@ class LitheClientLS9(LitheClient):
                     buf += chunk
                     while len(buf) >= 10:
                         try:
-                            # DataLen LE per LUCI spec §10.2
-                            data_len = struct.unpack_from("<H", buf, 8)[0]
+                            # BE on wire (empirical) — see comment in
+                            # main client _consume_packets.
+                            data_len = struct.unpack_from(">H", buf, 8)[0]
                         except struct.error:
                             break
                         total = 10 + data_len
                         if len(buf) < total:
                             break
-                        # MBID LE per LUCI spec §10.2
-                        r_mbid = struct.unpack_from("<H", buf, 3)[0]
+                        r_mbid = struct.unpack_from(">H", buf, 3)[0]
                         r_payload = buf[10:10 + data_len].decode("utf-8", "replace").rstrip("\x00")
-                        # Tolerate the LUCI 0x00 packet terminator after each
-                        # packet (vendor §10.2). Without this, the next packet
-                        # parse can start one byte offset.
-                        skip = total
-                        if total < len(buf) and buf[total] == 0x00:
-                            skip = total + 1
-                        buf = buf[skip:]
+                        buf = buf[total:]
                         # ALWAYS dispatch — even MB#10 needs _handle_push so
                         # it can send the MB#11=1 grant. Previously this was
                         # suppressed which broke source switching on LS9.
