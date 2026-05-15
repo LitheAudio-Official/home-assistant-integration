@@ -446,41 +446,45 @@ class LitheClient:
         await self._send(0x02, MB_DEVICE_NAME, name)
 
     async def async_play_chime(self, chime_number: int) -> None:
-        """Trigger an embedded audio cue via MB#80 + MB#82 flow.
+        """Trigger an embedded audio cue via MB#80.
 
-        Per Lithe developer guidance (2026-05-14):
+        Per LUCI Tech Note v15.0.7 section 9.33 (RxTx_MB#80 Play Audio
+        Cues), the chime protocol is a simple single-request flow:
 
-          "We have added a LUCI Message box to notify Audio chime cue
-           start to MCU. On getting this notification, MCU must open
-           the audio path for playback."
+            HOST → LSx: SET MB#80 "play <Index>"
+            LSx → HOST: SET Response, payload = SUCCESS / FILE_NOT_FOUND / NI
 
-          "LUCI MB#80 is used to play the audio cues on the device.
-           LS10 send response back in MB#82 (newly added). Audio cue
-           start, playback success/failure notifications are notified
-           through MB#82."
+        Spec-defined index range: **1-10** (max 10 audio cues per device per
+        LUCI spec §9.33). The Lithe customer API doc and PRO2 product spec
+        say 1-15, with slots 11-15 enabled by vendor SCK customization on
+        specific firmware builds. We accept 1-15 to match per-product
+        capability matrix (PRODUCT_CHIMES); slots beyond the actual
+        firmware support return NI which we log clearly.
 
-        Protocol flow on this firmware:
-          1. Host → LS10:  MB#80 SET "play N"
-          2. LS10 → host:  MB#82 "AUDIOCUE_START"
-          3. Host → LS10:  MB#82 SET "AUDIOPATH_OPEN" (handled in _dispatch_rx)
-          4. LS10 plays the cue
-          5. LS10 → host:  MB#82 "SUCCESS" (or FAILURE/NI on error)
+        Per LUCI spec §2.6 / Lithe API doc §2.6:
+          - Playback is immediate
+          - Behaviour is deterministic
+          - Latency is minimal
 
-        On older firmware without MB#82, MB#80 still works but plays
-        silently if no other source has released the audio path.
+        No MB#82 handshake exists in the LUCI spec (searched all 240
+        pages — zero references). Earlier integration code implemented
+        an MB#82 AUDIOPATH_OPEN handshake based on private Lithe support
+        guidance, but this firmware (PRO2 CR443GP_3713) does not push
+        MB#82. We now match the spec exactly: single MB#80 SET.
 
-        Source ownership caveat (per packet evidence 2026-05):
-          When source is held by Spotify Connect (4), AirPlay (1),
-          or Cast (24), MB#80 still returns SUCCESS in MB#82 but no
-          sound is produced — the audio path is locked by the
-          streaming client. Releasing requires the EXTERNAL client
-          to disconnect (STOP/PAUSE via LUCI does NOT release these
-          sources). We log a warning when this state is detected.
+        Source-blocking caveat (per LUCI spec §10.35 MB#494 Cast Setup):
+          "If the device's audio path is assigned to external sources,
+           the user might not hear the audio test tone played by the
+           LS9... this notification serves the purpose of changing the
+           audio path back to LS9."
 
-        Slots are 1-15 depending on speaker model. Spec §9.33 documents
-        1-10 but PRO2 firmware extends this to 1-15 (per Lithe support).
-        We clamp to 1-15; sending an unsupported slot returns FAILURE
-        but doesn't break the connection.
+        The spec confirms external sources (Spotify, AirPlay, Cast) can
+        silently block audio output. The documented solution is to
+        switch the audio path back to LSx (i.e. SET MB#50 to LSx's
+        source ID, typically 0). We don't auto-do this because it
+        interrupts the user's external playback — instead we surface
+        the issue diagnostically so users can stop the external source
+        themselves.
         """
         n = max(1, min(15, int(chime_number)))
         now = asyncio.get_event_loop().time()
@@ -494,40 +498,21 @@ class LitheClient:
             self.state.play_state, self.state.source_id,
         )
 
+        # Refuse if socket isn't actually open — gives clear log feedback
+        # instead of silent no-op.
+        if sock_state != "open" or not self.state.connected:
+            _LOGGER.warning(
+                "CHIME-SKIP slot=%d — socket not ready (%s, connected=%s). "
+                "Try again in 1-2 seconds.",
+                n, sock_state, self.state.connected,
+            )
+            return
+
         try:
-            # MB#80 SET "play N" — the documented audio cue trigger.
-            #
-            # Protocol behavior on this firmware (PRO2 CR443GP_3713):
-            #   - Speaker sends MB#80 status=1 (empty payload) as the
-            #     "cue starting" notification — NOT MB#82.
-            #   - MB#82 AUDIOCUE_START is documented but is NOT pushed
-            #     by this firmware revision. We previously waited for
-            #     it which caused 4-second silent chime failures.
-            #   - The audio path must be opened by sending
-            #     MB#82 SET "AUDIOPATH_OPEN" proactively (not in
-            #     response to a notification that never arrives).
-            #
-            # So we send both: MB#80 to trigger the cue, then MB#82
-            # AUDIOPATH_OPEN to authorise playback. The handler in
-            # _dispatch_rx still answers MB#82 AUDIOCUE_START if a
-            # newer firmware revision does emit it, but we don't depend
-            # on it.
+            # Send the documented chime command. Nothing else.
+            # Per LUCI spec §9.33, this is the complete protocol.
             await self._send(0x02, MB_CHIME, f"play {n}")
             self._last_chime_mbid = MB_CHIME
-
-            # Small delay so the speaker processes MB#80 before we
-            # send MB#82 — empirically 50ms is sufficient.
-            await asyncio.sleep(0.05)
-
-            # Proactively send AUDIOPATH_OPEN — this is what newer
-            # firmware would have asked for via MB#82 push. Sending it
-            # unsolicited is safe; the speaker either acts on it or
-            # ignores it as already-open.
-            await self._send(0x02, MB_AUDIOCUE, "AUDIOPATH_OPEN")
-            _LOGGER.debug(
-                "CHIME: sent MB#82 AUDIOPATH_OPEN proactively (this firmware "
-                "does not push MB#82 AUDIOCUE_START)"
-            )
         except Exception as e:
             _LOGGER.warning("Chime send failed: %s", e)
 
