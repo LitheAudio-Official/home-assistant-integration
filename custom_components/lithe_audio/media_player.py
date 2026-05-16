@@ -126,9 +126,6 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
         # display them as source_name when they activate themselves)
         self._source_id_by_name = {SOURCES[s]: s for s in src_ids if s in SOURCES}
 
-        # Sonos-style grouping — list of joined entity_ids
-        self._group_members: list[str] = []
-
     @property
     def device_info(self) -> DeviceInfo:
         state = self._client.state
@@ -162,8 +159,14 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
             | MediaPlayerEntityFeature.BROWSE_MEDIA
             | MediaPlayerEntityFeature.SHUFFLE_SET
             | MediaPlayerEntityFeature.REPEAT_SET
-            | MediaPlayerEntityFeature.GROUPING
             | MediaPlayerEntityFeature.SELECT_SOUND_MODE
+            # GROUPING is intentionally NOT included. Lithe firmware
+            # doesn't support arbitrary multi-room sync over LUCI — the
+            # only proper multi-room mechanism is Google Cast groups
+            # (created in the Google Home app). Those appear as their
+            # own media_player.* entities via HA's Cast integration.
+            # Users multi-room by picking a Cast group from the source
+            # list, OR by controlling the Cast group entity directly.
         )
         # MEDIA_ANNOUNCE was added in HA 2022.12 — guard the import
         ann = getattr(MediaPlayerEntityFeature, "MEDIA_ANNOUNCE", None)
@@ -202,11 +205,46 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
 
     @property
     def source(self) -> str | None:
+        # If a Cast group is currently active (we set this when user
+        # selected it from the source list), show it instead of the
+        # internal source.
+        active_cast_group = self._client.state.active_cast_group
+        if active_cast_group:
+            return f"Cast: {active_cast_group}"
         return self._client.state.source_name
 
     @property
     def source_list(self) -> list[str]:
-        return self._source_list
+        """List of selectable sources for this speaker.
+
+        Includes locally activatable inputs (USB/AUX/SPDIF/Bluetooth/
+        Favourites/Direct URL) PLUS any Google Cast groups that include
+        this speaker. Cast groups are the only true multi-room mechanism
+        for Lithe — they use Google's cloud-side sync infrastructure.
+
+        Cast groups are discovered live via HA's Cast integration; we
+        don't manage them. Users create/edit/delete Cast groups in the
+        Google Home app on their phone.
+        """
+        base = list(self._source_list)
+        # Append Cast groups as "Cast: <Group Name>" entries
+        for cg in self._discover_cast_groups():
+            label = f"Cast: {cg['name']}"
+            if label not in base:
+                base.append(label)
+        return base
+
+    def _discover_cast_groups(self) -> list[dict[str, Any]]:
+        """Return Cast group entities currently registered in HA.
+
+        Each entry: {"entity_id": "media_player.kitchen_group",
+                     "name": "Kitchen Group"}
+        """
+        try:
+            from .group import discover_cast_groups
+            return discover_cast_groups(self.hass) or []
+        except Exception:
+            return []
 
     @property
     def media_title(self) -> str | None:
@@ -381,39 +419,18 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
         """Set repeat mode (off / all / one)."""
         await self._client.async_set_repeat(str(repeat))
 
-    async def async_join_players(self, group_members: list[str]) -> None:
-        """Group this speaker with others (Sonos-style media_player.join).
-
-        This creates an application-level group where each member plays
-        the same content independently (no firmware-level clock sync).
-        For tight multi-room sync, use Google Cast Groups via Browse
-        Media or the Cast integration directly.
-
-        Note: Lithe firmware doesn't support master/slave grouping over
-        LUCI (that's a Cast feature), so we implement this as a soft
-        group — the speaker remembers its members in state attributes,
-        and future play_media calls fan out to all members.
-        """
-        # Store member entity_ids in extra_state_attributes so HA's
-        # standard grouping UI shows them as joined.
-        self._group_members = list(group_members)
-        _LOGGER.info(
-            "%s joined with %d members: %s",
-            self.entity_id, len(group_members), group_members,
-        )
-        # No firmware-level action needed — group state is local.
-        self.async_write_ha_state()
-
-    async def async_unjoin_player(self) -> None:
-        """Remove this speaker from any current group."""
-        self._group_members = []
-        _LOGGER.info("%s unjoined from group", self.entity_id)
-        self.async_write_ha_state()
-
-    @property
-    def group_members(self) -> list[str]:
-        """List of entity_ids currently grouped with this speaker."""
-        return getattr(self, "_group_members", []) or []
+    # ── Multi-room note ────────────────────────────────────────────────
+    # Lithe Audio doesn't support arbitrary multi-room sync over LUCI.
+    # The only true multi-room mechanism is Google Cast groups, which:
+    #   - are created in the Google Home app on the user's phone
+    #   - appear automatically as media_player.* entities via HA's Cast
+    #     integration
+    #   - sync audio across all member speakers at the firmware/cloud
+    #     level (sub-30ms drift)
+    # We surface those groups via our source_list and route play_media
+    # through them when selected. No GROUPING feature flag, no
+    # join_players, no unjoin — those would imply Lithe-native grouping
+    # which doesn't exist.
 
     # ── Sound mode (EQ preset, Denon-style) ───────────────────────────
 
@@ -447,23 +464,64 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
     async def async_select_source(self, source: str) -> None:
         """Switch source by friendly name.
 
-        Only sources in our self._source_list (locally activatable inputs)
-        are selectable here. Passive sources (Spotify Connect, AirPlay,
-        Cast) cannot be activated via this method — they require an
-        external client to start streaming to them.
+        Supported sources:
+          - Local inputs (USB/AUX/SPDIF/Bluetooth/Favourites/Direct URL)
+            — switched via MB#50 on the Lithe speaker
+          - "Cast: <Group>" entries — selects a Google Cast group. The
+            speaker isn't directly switched; instead, subsequent
+            play_media calls are routed through the Cast group's
+            media_player entity (true multi-room sync). The speaker
+            remains in its current source until Google Cast hands it
+            content.
 
-        Bluetooth: activates the radio if a paired device is in range.
-        AUX/SPDIF: switches to the analog/optical input.
-        USB: plays from inserted USB.
-        Favourites: replays the last/first saved favourite.
-        Direct URL: not normally selected directly — use play_media instead.
+        Passive sources (Spotify Connect, AirPlay, Cast) cannot be
+        activated via this method — they require an external client to
+        start streaming to them.
         """
         import asyncio
+
+        # Cast group selection — does not touch MB#50 on this speaker.
+        # The Cast group entity (managed by HA's Cast integration) is
+        # what actually plays audio. We record the choice so play_media
+        # knows to forward through it.
+        if source.startswith("Cast: "):
+            group_name = source[len("Cast: "):]
+            target_entity = None
+            for cg in self._discover_cast_groups():
+                if cg["name"] == group_name:
+                    target_entity = cg["entity_id"]
+                    break
+            if not target_entity:
+                _LOGGER.warning(
+                    "select_source: Cast group %r not found in HA. "
+                    "Create it in the Google Home app first.",
+                    group_name,
+                )
+                return
+            self._client.state.active_cast_group = group_name
+            self._client.state.active_cast_group_entity = target_entity
+            _LOGGER.info(
+                "select_source: Cast group %r selected (entity=%s). "
+                "Future play_media will route through this group.",
+                group_name, target_entity,
+            )
+            self.async_write_ha_state()
+            return
+
+        # Local source — clear any active Cast group routing
+        if self._client.state.active_cast_group:
+            _LOGGER.info(
+                "select_source: clearing Cast group %r — switching to local source %r",
+                self._client.state.active_cast_group, source,
+            )
+            self._client.state.active_cast_group = ""
+            self._client.state.active_cast_group_entity = ""
+
         src_id = self._source_id_by_name.get(source)
         if src_id is None:
             _LOGGER.warning(
                 "select_source: unknown source %r (available: %s)",
-                source, self._source_list,
+                source, self.source_list,
             )
             return
 
@@ -575,57 +633,40 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
                 _LOGGER.error("Announce via tannoy failed: %s", e)
             return
 
-        # Regular play (no announce) — direct URL via MB#41 PLAYITEM:DIRECT
+        # Regular play (no announce). If user selected a Cast group as
+        # the source, forward this URL to the Cast group entity instead
+        # of playing locally. The Cast group will synchronously stream
+        # to all its members (Google handles the timing infrastructure).
         if media_type in _PLAYABLE_TYPES or media_id.startswith(("http://", "https://")):
+            cast_group_entity = self._client.state.active_cast_group_entity
+            if cast_group_entity:
+                _LOGGER.info(
+                    "play_media: routing through Cast group %s (url=%s)",
+                    cast_group_entity, media_id,
+                )
+                try:
+                    await self.hass.services.async_call(
+                        "media_player", "play_media",
+                        {
+                            "entity_id":          cast_group_entity,
+                            "media_content_type": media_type or "music",
+                            "media_content_id":   media_id,
+                        },
+                        blocking=False,
+                    )
+                except Exception as e:
+                    _LOGGER.error(
+                        "Cast group routing failed: %s — falling back to local",
+                        e,
+                    )
+                    await self._client.async_play_url(media_id)
+                return
+
+            # No Cast group active — play locally only
             await self._client.async_play_url(media_id)
-            # Fan out to grouped members (Bluesound/Sonos pattern: when
-            # speakers are joined, the same URL plays on each member).
-            # Each member is its own LUCI client so we tell them all to
-            # PLAYITEM:DIRECT with the same URL.
-            await self._fanout_to_members("async_play_url", media_id)
             return
 
         _LOGGER.warning("Unsupported play_media: type=%s id=%s", media_type, media_id)
-
-    async def _fanout_to_members(self, method_name: str, *args) -> None:
-        """Call a client method on every grouped member in parallel.
-
-        Looks up each member entity_id via the entity registry, finds
-        its coordinator, and invokes coord.client.<method_name>(*args).
-        Mimics Sonos's "fan-out from coordinator to followers" pattern.
-        """
-        members = self.group_members
-        if not members:
-            return
-        try:
-            from homeassistant.helpers import entity_registry as er
-            ent_reg = er.async_get(self.hass)
-        except Exception:
-            return
-        bucket = self.hass.data.get(DOMAIN, {})
-        import asyncio
-
-        async def call_one(entity_id: str):
-            if entity_id == self.entity_id:
-                return  # skip self - already played above
-            ent = ent_reg.async_get(entity_id)
-            if not ent or not ent.config_entry_id:
-                return
-            entry_data = bucket.get(ent.config_entry_id)
-            if not isinstance(entry_data, dict):
-                return
-            coord = entry_data.get(DATA_COORDINATOR) or entry_data.get("coordinator")
-            if not coord:
-                return
-            try:
-                fn = getattr(coord.client, method_name, None)
-                if fn:
-                    await fn(*args)
-            except Exception as e:
-                _LOGGER.warning("Group fan-out %s on %s failed: %s",
-                                method_name, entity_id, e)
-
-        await asyncio.gather(*(call_one(m) for m in members))
 
     async def async_browse_media(
         self,
