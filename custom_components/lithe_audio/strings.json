@@ -1,6 +1,5 @@
 {
   "config": {
-    "title": "Lithe Audio",
     "step": {
       "user": {
         "title": "Add a Lithe Audio speaker",
@@ -18,7 +17,7 @@
       },
       "manual": {
         "title": "Enter speaker details",
-        "description": "If you know the speaker's IP address, enter it below. Pick the matching model \u2014 TLS is enabled automatically for LS10 speakers (PRO 2, V3, iO1) using a built-in certificate.",
+        "description": "If you know the speaker's IP address, enter it below. Pick the matching model — TLS is enabled automatically for LS10 speakers (PRO 2, V3, iO1) using a built-in certificate.",
         "data": {
           "product": "Speaker model",
           "host": "IP address",
@@ -173,16 +172,16 @@
   "options": {
     "step": {
       "init": {
-        "title": "Lithe Audio \u2014 Configure",
+        "title": "Lithe Audio — Configure",
         "description": "Choose what to configure for this speaker.",
         "menu_options": {
-          "prayer_general": "Prayer Scheduler \u2014 General settings",
-          "prayer_entries": "Prayer Scheduler \u2014 Per-prayer URLs & volumes",
+          "prayer_general": "Prayer Scheduler — General settings",
+          "prayer_entries": "Prayer Scheduler — Per-prayer URLs & volumes",
           "prayer_disable": "Disable Prayer Scheduler"
         }
       },
       "prayer_general": {
-        "title": "Prayer Schedule \u2014 Location & defaults",
+        "title": "Prayer Schedule — Location & defaults",
         "description": "Set your city, country and calculation method. Prayer times are fetched daily from aladhan.com. The default URL and volume below will be used for any prayer that doesn't have its own override.",
         "data": {
           "city": "City",
@@ -207,7 +206,7 @@
         }
       },
       "prayer_one": {
-        "title": "Prayer Schedule \u2014 {prayer_name} ({step_num}/{step_total})",
+        "title": "Prayer Schedule — {prayer_name} ({step_num}/{step_total})",
         "description": "Enable this prayer to schedule a daily announcement. Choose an audio preset or paste a custom URL.",
         "data": {
           "enabled": "Schedule this prayer",
@@ -260,7 +259,7 @@
           "fade_in_seconds": "Fade-in duration (seconds, 0 = no fade)",
           "snooze_minutes": "Default snooze (minutes)",
           "_action": "Action",
-          "sunrise_enabled": "Sunrise simulation \u2014 ramp lights before alarm",
+          "sunrise_enabled": "Sunrise simulation — ramp lights before alarm",
           "sunrise_lights": "Lights to ramp (Hue, etc.)",
           "sunrise_minutes": "Ramp duration (minutes before alarm)",
           "sunrise_start_kelvin": "Starting colour temperature (warm, Kelvin)",
@@ -305,7 +304,7 @@
     },
     "error": {
       "missing_url": "Please pick a preset or enter a URL.",
-      "test_failed": "Test playback failed \u2014 check the speaker connection."
+      "test_failed": "Test playback failed — check the speaker connection."
     }
   }
 }
