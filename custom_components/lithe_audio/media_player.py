@@ -232,40 +232,29 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
 
     @property
     def source(self) -> str | None:
-        # If a Cast group is currently active (we set this when user
-        # selected it from the source list), show it instead of the
-        # internal source.
-        # getattr() with default protects against a partial install where
-        # lithe_client.py is older and doesn't have the active_cast_group
-        # field on SpeakerState yet.
-        active_cast_group = getattr(self._client.state, "active_cast_group", "")
-        if active_cast_group:
-            return f"Cast: {active_cast_group}"
+        # Show the speaker's actual current local source. Cast group
+        # routing (when active) is reflected in the dedicated Cast Group
+        # select entity (see select.py), not here, so the dropdown
+        # selection always matches a list entry.
         return self._client.state.source_name
 
     @property
     def source_list(self) -> list[str]:
-        """List of selectable sources for this speaker.
+        """List of selectable local sources for this speaker.
 
-        Includes locally activatable inputs (USB/AUX/SPDIF/Bluetooth/
-        Favourites/Direct URL) PLUS any Google Cast groups that include
-        this speaker. Cast groups are the only true multi-room mechanism
-        for Lithe — they use Google's cloud-side sync infrastructure.
-
-        Cast groups are discovered live via HA's Cast integration; we
-        don't manage them. Users create/edit/delete Cast groups in the
-        Google Home app on their phone.
+        Only locally activatable inputs (USB/AUX/SPDIF/Bluetooth/
+        Favourites/Direct URL). Cast groups have their own dedicated
+        select entity (Cast Group dropdown) — they don't belong in
+        the source list because picking a Cast group doesn't switch
+        the local speaker source, it routes future playback through
+        Google's multi-room infrastructure instead.
         """
-        base = list(self._source_list)
-        # Append Cast groups as "Cast: <Group Name>" entries
-        for cg in self._discover_cast_groups():
-            label = f"Cast: {cg['name']}"
-            if label not in base:
-                base.append(label)
-        return base
+        return list(self._source_list)
 
     def _discover_cast_groups(self) -> list[dict[str, Any]]:
         """Return Cast group entities currently registered in HA.
+
+        Used by the dedicated Cast Group select entity in select.py.
 
         Each entry: {"entity_id": "media_player.kitchen_group",
                      "name": "Kitchen Group"}
@@ -497,17 +486,14 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
         await self._client.async_dsp_command(DSP_EQ, idx)
 
     async def async_select_source(self, source: str) -> None:
-        """Switch source by friendly name.
+        """Switch local source by friendly name.
 
-        Supported sources:
-          - Local inputs (USB/AUX/SPDIF/Bluetooth/Favourites/Direct URL)
-            — switched via MB#50 on the Lithe speaker
-          - "Cast: <Group>" entries — selects a Google Cast group. The
-            speaker isn't directly switched; instead, subsequent
-            play_media calls are routed through the Cast group's
-            media_player entity (true multi-room sync). The speaker
-            remains in its current source until Google Cast hands it
-            content.
+        Switches the Lithe speaker's MB#50 source. Only local inputs
+        (USB/AUX/SPDIF/Bluetooth/Favourites/Direct URL) are valid.
+
+        Cast group routing is handled separately by the dedicated
+        Cast Group select entity (see select.py). Selecting a local
+        source here clears any active Cast group routing.
 
         Passive sources (Spotify Connect, AirPlay, Cast) cannot be
         activated via this method — they require an external client to
@@ -515,39 +501,7 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
         """
         import asyncio
 
-        # Cast group selection — does not touch MB#50 on this speaker.
-        # The Cast group entity (managed by HA's Cast integration) is
-        # what actually plays audio. We record the choice so play_media
-        # knows to forward through it.
-        if source.startswith("Cast: "):
-            group_name = source[len("Cast: "):]
-            target_entity = None
-            for cg in self._discover_cast_groups():
-                if cg["name"] == group_name:
-                    target_entity = cg["entity_id"]
-                    break
-            if not target_entity:
-                _LOGGER.warning(
-                    "select_source: Cast group %r not found in HA. "
-                    "Create it in the Google Home app first.",
-                    group_name,
-                )
-                return
-            # Use setattr — fields may not exist on older lithe_client state
-            try:
-                self._client.state.active_cast_group = group_name
-                self._client.state.active_cast_group_entity = target_entity
-            except Exception:
-                pass
-            _LOGGER.info(
-                "select_source: Cast group %r selected (entity=%s). "
-                "Future play_media will route through this group.",
-                group_name, target_entity,
-            )
-            self.async_write_ha_state()
-            return
-
-        # Local source — clear any active Cast group routing
+        # Selecting a local source clears any active Cast group routing
         prev_cast = getattr(self._client.state, "active_cast_group", "")
         if prev_cast:
             _LOGGER.info(

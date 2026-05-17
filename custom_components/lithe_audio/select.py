@@ -35,6 +35,12 @@ async def async_setup_entry(
     if c["tuning_select"]:
         entities.append(LitheTuningSelect(coordinator, entry))
 
+    # Cast Group selector — every speaker gets one. The dropdown lists
+    # Cast groups discovered live from HA's Cast integration. Picking
+    # one routes subsequent media playback through the Cast group's
+    # media_player entity (Google's multi-room sync).
+    entities.append(LitheCastGroupSelect(coordinator, entry))
+
     if entities:
         async_add_entities(entities)
 
@@ -138,4 +144,88 @@ class LitheTuningSelect(_LitheBaseSelect):
         idx = 0 if option == "Enclosure 13L" else 1
         self._current = option
         await self._client.async_dsp_command(DSP_TUNING, idx)
+        self.async_write_ha_state()
+
+
+class LitheCastGroupSelect(CoordinatorEntity[LitheAudioCoordinator], SelectEntity):
+    """Cast Group selector — routes future playback through a Google Cast group.
+
+    Lists Cast groups discovered from HA's Cast integration (configured in
+    the Google Home app). Picking one means subsequent `play_media`,
+    favourites, prayer audio, and TTS go through that Cast group's
+    media_player entity — providing true multi-room sync via Google's
+    cloud infrastructure.
+
+    Picking "(None)" clears routing and restores direct local playback.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "Cast Group"
+    _attr_icon = "mdi:speaker-multiple"
+
+    NONE_LABEL = "(None — local only)"
+
+    def __init__(self, coordinator: LitheAudioCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+        self._client = coordinator.client
+        self._attr_unique_id = f"{entry.data['host']}_{entry.entry_id}_cast_group"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(identifiers={(DOMAIN, self._entry.data["host"])})
+
+    @property
+    def available(self) -> bool:
+        return self._client.state.connected
+
+    def _discover(self) -> list[dict]:
+        try:
+            from .group import discover_cast_groups
+            return discover_cast_groups(self.hass) or []
+        except Exception:
+            return []
+
+    @property
+    def options(self) -> list[str]:
+        """Live list of Cast groups + a 'None' option to clear routing."""
+        groups = self._discover()
+        labels = [g["name"] for g in groups]
+        return [self.NONE_LABEL] + sorted(labels)
+
+    @property
+    def current_option(self) -> str:
+        """Current selection — the active Cast group name, or '(None)'."""
+        current = getattr(self._client.state, "active_cast_group", "")
+        return current if current else self.NONE_LABEL
+
+    async def async_select_option(self, option: str) -> None:
+        """Set or clear the Cast group routing for this speaker."""
+        if option == self.NONE_LABEL:
+            # Clear routing
+            try:
+                self._client.state.active_cast_group = ""
+                self._client.state.active_cast_group_entity = ""
+            except Exception:
+                pass
+            self.async_write_ha_state()
+            return
+
+        # Find the matching group's entity_id
+        target_entity = None
+        for cg in self._discover():
+            if cg["name"] == option:
+                target_entity = cg["entity_id"]
+                break
+        if not target_entity:
+            return
+        try:
+            self._client.state.active_cast_group = option
+            self._client.state.active_cast_group_entity = target_entity
+        except Exception:
+            pass
+        self.async_write_ha_state()
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
         self.async_write_ha_state()

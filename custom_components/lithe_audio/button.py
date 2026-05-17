@@ -37,6 +37,13 @@ async def async_setup_entry(
     for slot in range(1, 10):
         entities.append(LitheSaveFavouriteButton(coordinator, entry, slot))
 
+    # Play-favourite buttons (slots 1-9) — press to play saved favourite.
+    # Looks up HA-side favourites first (more reliable than native MB#70
+    # which fails with GENERIC_FAV_SAVE_FAIL on Direct URL streams), then
+    # falls back to the speaker's onboard favourite.
+    for slot in range(1, 10):
+        entities.append(LithePlayFavouriteButton(coordinator, entry, slot))
+
     # Heart button: saves current track to the NEXT free favourite slot.
     # Press once to add current track to favourites without picking a slot.
     entities.append(LitheHeartButton(coordinator, entry))
@@ -156,6 +163,60 @@ class LitheSaveFavouriteButton(ButtonEntity):
     async def async_press(self) -> None:
         _LOGGER.info("Save to favourite slot %d pressed", self._slot)
         await self._client.async_save_favourite(self._slot)
+
+
+class LithePlayFavouriteButton(ButtonEntity):
+    """Play a saved favourite from a specific slot.
+
+    Tries HA-side favourites first (works around the speaker's frequent
+    GENERIC_FAV_SAVE_FAIL on Direct URL slots), then falls back to the
+    speaker's native MB#70 favourites if no HA-side entry exists.
+    """
+
+    _attr_has_entity_name = True
+    _attr_icon = "mdi:play-circle-outline"
+
+    def __init__(self, coordinator: LitheAudioCoordinator, entry: ConfigEntry, slot: int) -> None:
+        self._coord = coordinator
+        self._client = coordinator.client
+        self._entry = entry
+        self._slot = slot
+        self._attr_name = f"Play Favourite {slot}"
+        self._attr_unique_id = f"{entry.data['host']}_{entry.entry_id}_play_fav_{slot}"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(identifiers={(DOMAIN, self._entry.data["host"])})
+
+    @property
+    def available(self) -> bool:
+        return self._client.state.connected
+
+    async def async_press(self) -> None:
+        _LOGGER.info("Play favourite slot %d pressed", self._slot)
+
+        # Try HA-side favourites first
+        try:
+            from .local_favs import get_local_favs
+            local_favs = get_local_favs(self.hass)
+            if local_favs:
+                fav = local_favs.get(self._slot)
+                if fav and fav.get("url"):
+                    _LOGGER.info(
+                        "Play Favourite %d (HA-side): %s",
+                        self._slot, fav.get("name") or fav["url"],
+                    )
+                    await self._client.async_play_url(fav["url"])
+                    return
+        except Exception as e:
+            _LOGGER.debug("HA-side favourite lookup failed: %s", e)
+
+        # Fall back to the speaker's native favourite slot via MB#70
+        _LOGGER.info("Play Favourite %d (native MB#70)", self._slot)
+        try:
+            await self._client.async_play_favourite(self._slot)
+        except Exception as e:
+            _LOGGER.warning("Native favourite play failed: %s", e)
 
 
 class LitheHeartButton(ButtonEntity):

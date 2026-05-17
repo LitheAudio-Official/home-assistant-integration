@@ -142,12 +142,21 @@ async def async_setup_group_manager(hass: HomeAssistant) -> LitheGroupManager:
 # ── Google Cast group discovery ────────────────────────────────────────
 
 def discover_cast_groups(hass: HomeAssistant) -> list[dict[str, Any]]:
-    """Return a list of all Google Cast Group media_player entities in HA.
+    """Return a list of Cast group media_player entities in HA.
 
-    The Google Cast integration creates one media_player.* entity per
-    cast group configured in the Google Home app. We identify them by:
-      - integration == 'cast' in the device registry
-      - device.model == 'Google Cast Group'
+    The Google Cast integration creates a media_player entity for each
+    Cast group configured in the Google Home app. These come in two
+    flavours:
+      - Permanent groups (created in Google Home → Speaker groups)
+        usually have device.model == "Google Cast Group"
+      - Dynamic groups (created on-the-fly by some apps) may have
+        different model strings
+
+    To find them robustly, we look at every media_player entity from
+    the cast integration platform and check several signals:
+      - device.model contains "Group" or "Cast Group"
+      - entity_id contains "group" or "_group_"
+      - device manufacturer is Google AND model includes Group
 
     Returns: [{"entity_id": "...", "name": "...", "device_id": "..."}, ...]
     """
@@ -160,18 +169,80 @@ def discover_cast_groups(hass: HomeAssistant) -> list[dict[str, Any]]:
     ent_reg = er.async_get(hass)
 
     cast_groups: list[dict[str, Any]] = []
+    seen_entities: set[str] = set()
+    seen_names: set[str] = set()
+
+    # Pass 1: walk every media_player from the cast platform
+    for entity in ent_reg.entities.values():
+        if entity.platform != "cast":
+            continue
+        if not entity.entity_id.startswith("media_player."):
+            continue
+        if entity.disabled_by:
+            continue
+        # Find the linked device to check its model
+        device = dev_reg.async_get(entity.device_id) if entity.device_id else None
+        is_group = False
+        if device and device.model:
+            model_lower = device.model.lower()
+            if "group" in model_lower:  # catches "Google Cast Group", "Cast Group", "Audio Group", etc.
+                is_group = True
+        # Also catch by entity_id naming convention
+        eid_lower = entity.entity_id.lower()
+        if "_group" in eid_lower or eid_lower.endswith("group"):
+            is_group = True
+
+        if not is_group:
+            continue
+        if entity.entity_id in seen_entities:
+            continue
+
+        # Resolve display name (user-renamed wins over auto-name)
+        name = (
+            entity.name
+            or (device.name_by_user if device else None)
+            or (device.name if device else None)
+            or entity.original_name
+            or entity.entity_id
+        )
+        # Dedup by lowercased name too — two entities with the same
+        # display name (e.g. an old stale group + a current one) would
+        # otherwise both appear in the UI.
+        name_key = name.strip().lower()
+        if name_key in seen_names:
+            continue
+        cast_groups.append({
+            "entity_id": entity.entity_id,
+            "name":      name,
+            "device_id": entity.device_id or "",
+        })
+        seen_entities.add(entity.entity_id)
+        seen_names.add(name_key)
+
+    # Pass 2 (legacy): walk the device registry directly for any cast-domain
+    # devices marked as Google Cast Group, in case some weren't caught by
+    # the platform-walk above (rare, but defensive).
     for device in dev_reg.devices.values():
         if device.model != "Google Cast Group":
             continue
-        # Find the media_player entity attached to this device
         for entry in er.async_entries_for_device(ent_reg, device.id):
-            if entry.entity_id.startswith("media_player."):
-                cast_groups.append({
-                    "entity_id": entry.entity_id,
-                    "name":      device.name_by_user or device.name or entry.entity_id,
-                    "device_id": device.id,
-                })
-                break
+            if not entry.entity_id.startswith("media_player."):
+                continue
+            if entry.entity_id in seen_entities:
+                continue
+            disp = device.name_by_user or device.name or entry.entity_id
+            name_key = disp.strip().lower()
+            if name_key in seen_names:
+                continue
+            cast_groups.append({
+                "entity_id": entry.entity_id,
+                "name":      disp,
+                "device_id": device.id,
+            })
+            seen_entities.add(entry.entity_id)
+            seen_names.add(name_key)
+            break
+
     return cast_groups
 
 
