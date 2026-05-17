@@ -57,7 +57,11 @@ async def async_setup_entry(
     # subsequent entries skip the group creation.
     if not hass.data.get(DOMAIN, {}).get("_groups_added"):
         try:
-            from .group import get_group_manager, LitheGroupMediaPlayer
+            from .group import (
+                get_group_manager,
+                LitheGroupMediaPlayer,
+                create_cast_group_proxies,
+            )
             mgr = get_group_manager(hass)
             if mgr:
                 groups = mgr.list_groups()
@@ -68,14 +72,22 @@ async def async_setup_entry(
                 _LOGGER.info("Created %d Lithe group media_player entities", len(groups))
 
                 # Register listener so newly-created groups appear without restart.
-                # The manager calls listeners after add/update/delete.
                 def _on_groups_changed():
-                    # Note: HA doesn't expose a clean "remove entity" API from
-                    # the entity_platform here, so newly-added groups appear
-                    # on next reload. Deletions are handled by the entity's
-                    # `available` returning False (group_data lookup fails).
                     _LOGGER.info("Lithe groups changed — restart required to fully apply add/remove")
                 mgr.register_listener(_on_groups_changed)
+
+            # Cast group proxies — one media_player.* per Google Cast
+            # group, marked as part of the lithe_audio integration so
+            # they appear in HA's stock group picker. Lets the user tap
+            # the 4th icon (Group) on a Lithe speaker and pick a Cast
+            # group as the join target.
+            cast_proxies = create_cast_group_proxies(hass)
+            if cast_proxies:
+                entities.extend(cast_proxies)
+                _LOGGER.info(
+                    "Created %d Cast group proxy entities for grouping picker",
+                    len(cast_proxies),
+                )
         except Exception as e:
             _LOGGER.error("Failed to set up group entities: %s", e)
 
@@ -489,32 +501,59 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
     async def async_join_players(self, group_members: list[str]) -> None:
         """Route this speaker's audio through a Cast group.
 
-        HA's stock Group dialog passes the selected target entities here.
-        We accept Cast group entities (from HA's Cast integration) and
-        set up routing — any later play_media goes through that group's
-        media_player entity, which Google syncs across all members.
+        HA's stock Group dialog passes selected target entities here.
+        We accept:
+          - Direct Cast group entities (from HA's Cast integration), or
+          - Our LitheCastGroupProxy entities (which represent Cast groups
+            but belong to our integration so they appear in HA's picker).
 
-        If the user picks a non-Cast-group entity, we log a warning and
-        ignore it; Lithe firmware can't sync with arbitrary speakers.
+        The picked target is recorded as the active Cast group; any
+        later play_media goes through it. If the user picks a non-Cast
+        entity (e.g. another Lithe speaker), we log a warning and ignore
+        — Lithe firmware can't sync with arbitrary speakers.
         """
+        # All Cast groups discovered in HA (regardless of how they got there)
         cast_groups = self._discover_cast_groups()
-        cast_entity_ids = {cg["entity_id"]: cg["name"] for cg in cast_groups}
+        cast_entity_to_name = {cg["entity_id"]: cg["name"] for cg in cast_groups}
+
+        # Cast group proxies created by our integration map by unique_id
+        # pattern. Look them up via entity registry to get the underlying
+        # Cast entity_id.
+        try:
+            from homeassistant.helpers import entity_registry as er
+            ent_reg = er.async_get(self.hass)
+        except Exception:
+            ent_reg = None
 
         chosen_entity = None
         chosen_name = None
         for member in group_members:
             if member == self.entity_id:
                 continue  # Skip self
-            if member in cast_entity_ids:
+
+            # Direct match — user picked a Cast group entity directly
+            if member in cast_entity_to_name:
                 chosen_entity = member
-                chosen_name = cast_entity_ids[member]
+                chosen_name = cast_entity_to_name[member]
                 break
+
+            # Proxy match — user picked one of our LitheCastGroupProxy
+            # entities. Resolve to the underlying Cast entity.
+            if ent_reg:
+                ent = ent_reg.async_get(member)
+                if ent and ent.unique_id and ent.unique_id.startswith("lithe_cast_proxy_"):
+                    underlying = ent.unique_id[len("lithe_cast_proxy_"):]
+                    if underlying in cast_entity_to_name:
+                        chosen_entity = underlying
+                        chosen_name = cast_entity_to_name[underlying]
+                        break
 
         if not chosen_entity:
             _LOGGER.warning(
                 "join_players: no Cast group in %s. Lithe speakers can "
                 "only multi-room via Google Cast groups. Create one in "
-                "the Google Home app first.",
+                "the Google Home app first, then it'll appear here as "
+                "'Cast: <name>'.",
                 group_members,
             )
             return

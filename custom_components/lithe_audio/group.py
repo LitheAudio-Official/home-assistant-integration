@@ -437,3 +437,132 @@ class LitheGroupMediaPlayer(MediaPlayerEntity):
             media_id = media_id[len("lithe_url:"):]
         # Default: assume HTTP(S) URL → MB#41 PLAYITEM:DIRECT on each
         await self._fan_out("async_play_url", media_id)
+
+
+# ── Cast Group proxy ──────────────────────────────────────────────────
+#
+# To make Google Cast groups show up in HA's stock "Group" picker
+# (which only lists media_players from the same integration), we create
+# proxy entities — one per discovered Cast group — that belong to the
+# lithe_audio integration. When a Lithe speaker's group picker shows
+# them, ticking one routes audio through the underlying Cast group.
+
+class LitheCastGroupProxy(MediaPlayerEntity):
+    """Proxy entity for a Google Cast Group.
+
+    Appears in HA's group picker as a member of the lithe_audio
+    integration (so Lithe speakers can group with it). Forwards all
+    state and commands to the underlying Cast group media_player
+    entity created by HA's Cast integration.
+
+    The proxy is read-mostly: HA's group dialog only needs name and
+    state. All playback commands forward to the real Cast entity.
+    """
+
+    _attr_has_entity_name = False
+    _attr_icon = "mdi:speaker-multiple"
+    _attr_supported_features = (
+        MediaPlayerEntityFeature.PLAY
+        | MediaPlayerEntityFeature.PAUSE
+        | MediaPlayerEntityFeature.STOP
+        | MediaPlayerEntityFeature.VOLUME_SET
+        | MediaPlayerEntityFeature.VOLUME_MUTE
+        | MediaPlayerEntityFeature.PLAY_MEDIA
+    )
+
+    def __init__(self, hass: HomeAssistant, cast_group: dict) -> None:
+        self.hass = hass
+        self._cast_entity_id = cast_group["entity_id"]
+        self._cast_name = cast_group["name"]
+        self._attr_unique_id = f"lithe_cast_proxy_{cast_group['entity_id']}"
+        self._attr_name = f"Cast: {cast_group['name']}"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(
+            identifiers={(DOMAIN, f"cast_proxy_{self._cast_entity_id}")},
+            name=f"Cast: {self._cast_name}",
+            manufacturer="Google",
+            model="Cast Group (via Lithe Audio)",
+            entry_type=None,
+        )
+
+    def _cast_state(self):
+        """Resolve the underlying Cast group's state object."""
+        return self.hass.states.get(self._cast_entity_id)
+
+    @property
+    def available(self) -> bool:
+        s = self._cast_state()
+        return s is not None and s.state not in ("unavailable", None)
+
+    @property
+    def state(self):
+        s = self._cast_state()
+        return s.state if s else "unavailable"
+
+    @property
+    def volume_level(self) -> float | None:
+        s = self._cast_state()
+        if not s:
+            return None
+        v = s.attributes.get("volume_level")
+        return float(v) if v is not None else None
+
+    @property
+    def is_volume_muted(self) -> bool | None:
+        s = self._cast_state()
+        return s.attributes.get("is_volume_muted") if s else None
+
+    @property
+    def media_title(self) -> str | None:
+        s = self._cast_state()
+        return s.attributes.get("media_title") if s else None
+
+    @property
+    def media_artist(self) -> str | None:
+        s = self._cast_state()
+        return s.attributes.get("media_artist") if s else None
+
+    # ── Command forwarding ───────────────────────────────────────────
+
+    async def _forward(self, service: str, data: dict | None = None) -> None:
+        call_data = {"entity_id": self._cast_entity_id}
+        if data:
+            call_data.update(data)
+        await self.hass.services.async_call("media_player", service, call_data, blocking=False)
+
+    async def async_media_play(self) -> None:
+        await self._forward("media_play")
+
+    async def async_media_pause(self) -> None:
+        await self._forward("media_pause")
+
+    async def async_media_stop(self) -> None:
+        await self._forward("media_stop")
+
+    async def async_set_volume_level(self, volume: float) -> None:
+        await self._forward("volume_set", {"volume_level": volume})
+
+    async def async_mute_volume(self, mute: bool) -> None:
+        await self._forward("volume_mute", {"is_volume_muted": mute})
+
+    async def async_play_media(self, media_type, media_id, **kwargs) -> None:
+        await self._forward("play_media", {
+            "media_content_type": media_type,
+            "media_content_id":   media_id,
+        })
+
+
+def create_cast_group_proxies(hass: HomeAssistant) -> list:
+    """Build proxy entities for each discovered Cast group.
+
+    Called once at setup. New Cast groups added later require a HA
+    restart to appear (this matches Sonos's pattern — group changes
+    typically come via re-integration).
+    """
+    proxies = []
+    for cg in discover_cast_groups(hass):
+        proxies.append(LitheCastGroupProxy(hass, cg))
+    return proxies
+
