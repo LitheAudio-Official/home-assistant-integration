@@ -240,21 +240,43 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
 
     @property
     def source_list(self) -> list[str]:
-        """List of selectable local sources for this speaker.
+        """All selectable destinations in a single dropdown.
 
-        Only locally activatable inputs (USB/AUX/SPDIF/Bluetooth/
-        Favourites/Direct URL). Cast groups have their own dedicated
-        select entity (Cast Group dropdown) — they don't belong in
-        the source list because picking a Cast group doesn't switch
-        the local speaker source, it routes future playback through
-        Google's multi-room infrastructure instead.
+        Sections:
+          1. Local inputs (USB/AUX/SPDIF/Bluetooth/Direct URL)
+          2. Favourites — each saved favourite 1-9 shows as
+             "♥ Favourite N: <name>" (only slots with content shown).
+             The legacy "Favourites" entry triggers the speaker's
+             built-in favourites source (replays whatever is in slot 0).
+          3. Cast groups — each Cast group shows as "Cast: <group name>".
+             Selecting one routes subsequent play_media through the
+             Cast group's media_player entity (Google's sync infra).
         """
-        return list(self._source_list)
+        base = list(self._source_list)
+
+        # Favourites — list each saved one separately so the user can
+        # pick directly without a second dropdown.
+        try:
+            from .local_favs import get_local_favs
+            local_favs = get_local_favs(self.hass)
+            if local_favs:
+                for fav in local_favs.list_all():
+                    if fav.get("url"):  # only show populated slots
+                        label = f"♥ Favourite {fav['slot']}: {fav.get('name') or fav['url']}"
+                        base.append(label)
+        except Exception:
+            pass
+
+        # Cast groups — labelled "Cast: <name>" so the user can tell
+        # them apart from local sources at a glance.
+        for cg in self._discover_cast_groups():
+            label = f"Cast: {cg['name']}"
+            if label not in base:
+                base.append(label)
+        return base
 
     def _discover_cast_groups(self) -> list[dict[str, Any]]:
         """Return Cast group entities currently registered in HA.
-
-        Used by the dedicated Cast Group select entity in select.py.
 
         Each entry: {"entity_id": "media_player.kitchen_group",
                      "name": "Kitchen Group"}
@@ -486,28 +508,79 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
         await self._client.async_dsp_command(DSP_EQ, idx)
 
     async def async_select_source(self, source: str) -> None:
-        """Switch local source by friendly name.
-
-        Switches the Lithe speaker's MB#50 source. Only local inputs
-        (USB/AUX/SPDIF/Bluetooth/Favourites/Direct URL) are valid.
-
-        Cast group routing is handled separately by the dedicated
-        Cast Group select entity (see select.py). Selecting a local
-        source here clears any active Cast group routing.
-
-        Passive sources (Spotify Connect, AirPlay, Cast) cannot be
-        activated via this method — they require an external client to
-        start streaming to them.
+        """Switch source by friendly name. Handles:
+          - Local inputs (USB/AUX/SPDIF/Bluetooth/Favourites) → MB#50
+          - "♥ Favourite N: <name>" → plays saved favourite N
+          - "Cast: <Group>" → routes future media playback through that
+            Cast group's media_player entity (Google's multi-room sync)
         """
         import asyncio
 
-        # Selecting a local source clears any active Cast group routing
+        # ── Favourite picker ──────────────────────────────────────────
+        if source.startswith("♥ Favourite "):
+            try:
+                # Extract slot number from "♥ Favourite 3: My Track"
+                slot_part = source[len("♥ Favourite "):].split(":", 1)[0].strip()
+                slot = int(slot_part)
+            except (ValueError, IndexError):
+                _LOGGER.warning("select_source: bad favourite label %r", source)
+                return
+            try:
+                from .local_favs import get_local_favs
+                local_favs = get_local_favs(self.hass)
+                if local_favs:
+                    fav = local_favs.get(slot)
+                    if fav and fav.get("url"):
+                        _LOGGER.info(
+                            "select_source: playing favourite %d (%s)",
+                            slot, fav.get("name") or fav["url"],
+                        )
+                        await self._client.async_play_url(fav["url"])
+                        return
+            except Exception as e:
+                _LOGGER.debug("HA-side favourite lookup failed: %s", e)
+            # Fall back to speaker's native favourite slot
+            try:
+                await self._client.async_play_favourite(slot)
+            except Exception as e:
+                _LOGGER.warning("Native favourite play failed: %s", e)
+            return
+
+        # ── Cast group selection ─────────────────────────────────────
+        # Picking a Cast group doesn't switch the local source — instead
+        # it sets up routing so subsequent play_media calls go through
+        # Google Cast's multi-room sync infrastructure.
+        if source.startswith("Cast: "):
+            group_name = source[len("Cast: "):]
+            target_entity = None
+            for cg in self._discover_cast_groups():
+                if cg["name"] == group_name:
+                    target_entity = cg["entity_id"]
+                    break
+            if not target_entity:
+                _LOGGER.warning(
+                    "select_source: Cast group %r not found in HA. "
+                    "Create it in the Google Home app first.",
+                    group_name,
+                )
+                return
+            try:
+                self._client.state.active_cast_group = group_name
+                self._client.state.active_cast_group_entity = target_entity
+            except Exception:
+                pass
+            _LOGGER.info(
+                "select_source: Cast group %r selected (entity=%s). "
+                "Future play_media routes through this group.",
+                group_name, target_entity,
+            )
+            self.async_write_ha_state()
+            return
+
+        # ── Local source switch ──────────────────────────────────────
+        # Clear any active Cast routing first.
         prev_cast = getattr(self._client.state, "active_cast_group", "")
         if prev_cast:
-            _LOGGER.info(
-                "select_source: clearing Cast group %r — switching to local source %r",
-                prev_cast, source,
-            )
             try:
                 self._client.state.active_cast_group = ""
                 self._client.state.active_cast_group_entity = ""
@@ -525,12 +598,11 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
         _LOGGER.info("select_source: switching to %s (id=%d)", source, src_id)
         await self._client._send(0x02, 50, str(src_id))  # noqa: SLF001
 
-        # Refresh source/play state after a short delay so HA reflects
-        # the switch (some firmwares delay the MB#50 push by 500-1000ms)
+        # Refresh source/play state after a short delay
         async def _refresh():
             await asyncio.sleep(0.8)
-            await self._client._send(0x01, 50, "")  # MB#50 GET
-            await self._client._send(0x01, 51, "")  # MB#51 GET (play state)
+            await self._client._send(0x01, 50, "")
+            await self._client._send(0x01, 51, "")
         self.hass.async_create_task(_refresh())
 
     async def async_play_media(
