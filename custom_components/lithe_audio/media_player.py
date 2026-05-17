@@ -126,6 +126,10 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
         # display them as source_name when they activate themselves)
         self._source_id_by_name = {SOURCES[s]: s for s in src_ids if s in SOURCES}
 
+        # Grace timer for available property — set in available() the
+        # first time we see state.connected=True
+        self._last_seen_connected: float = 0.0
+
     @property
     def device_info(self) -> DeviceInfo:
         state = self._client.state
@@ -193,7 +197,30 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
 
     @property
     def available(self) -> bool:
-        return self._client.state.connected
+        """Speaker availability with brief disconnect grace.
+
+        We treat the speaker as available if either:
+          - the LUCI socket is currently connected, OR
+          - we've been disconnected for less than 90 seconds (grace
+            period to ride out brief network blips and the coordinator's
+            reconnect attempts without flapping the UI to Unavailable).
+
+        Once 90 seconds pass without successful reconnection we surface
+        the Unavailable state so the user knows there's a real problem.
+        """
+        if self._client.state.connected:
+            # Note the moment we became connected for the grace timer
+            self._last_seen_connected = self.hass.loop.time() if self.hass else 0.0
+            return True
+        # Disconnected — check grace window
+        try:
+            now = self.hass.loop.time()
+            last_seen = getattr(self, "_last_seen_connected", 0.0)
+            if last_seen and (now - last_seen) < 90.0:
+                return True
+        except Exception:
+            pass
+        return False
 
     @property
     def volume_level(self) -> float:
@@ -208,7 +235,10 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
         # If a Cast group is currently active (we set this when user
         # selected it from the source list), show it instead of the
         # internal source.
-        active_cast_group = self._client.state.active_cast_group
+        # getattr() with default protects against a partial install where
+        # lithe_client.py is older and doesn't have the active_cast_group
+        # field on SpeakerState yet.
+        active_cast_group = getattr(self._client.state, "active_cast_group", "")
         if active_cast_group:
             return f"Cast: {active_cast_group}"
         return self._client.state.source_name
@@ -280,6 +310,11 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
     def media_image_url(self) -> str | None:
         # Prefer the current track's artwork. Fall back to the Lithe logo
         # so the player card always has a visual identity even when idle.
+        # We serve the icon ourselves via the static path registered in
+        # card_resource.py — the local brand API endpoint requires an
+        # auth token which is awkward to inject from here. The brand/
+        # folder still handles the integration-level icon in the Devices
+        # & Services screen automatically (HA 2026.3+ local brands).
         return self._client.state.artwork_url or "/lithe_audio_assets/icon.png"
 
     @property
@@ -498,8 +533,12 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
                     group_name,
                 )
                 return
-            self._client.state.active_cast_group = group_name
-            self._client.state.active_cast_group_entity = target_entity
+            # Use setattr — fields may not exist on older lithe_client state
+            try:
+                self._client.state.active_cast_group = group_name
+                self._client.state.active_cast_group_entity = target_entity
+            except Exception:
+                pass
             _LOGGER.info(
                 "select_source: Cast group %r selected (entity=%s). "
                 "Future play_media will route through this group.",
@@ -509,13 +548,17 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
             return
 
         # Local source — clear any active Cast group routing
-        if self._client.state.active_cast_group:
+        prev_cast = getattr(self._client.state, "active_cast_group", "")
+        if prev_cast:
             _LOGGER.info(
                 "select_source: clearing Cast group %r — switching to local source %r",
-                self._client.state.active_cast_group, source,
+                prev_cast, source,
             )
-            self._client.state.active_cast_group = ""
-            self._client.state.active_cast_group_entity = ""
+            try:
+                self._client.state.active_cast_group = ""
+                self._client.state.active_cast_group_entity = ""
+            except Exception:
+                pass
 
         src_id = self._source_id_by_name.get(source)
         if src_id is None:
@@ -638,7 +681,7 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
         # of playing locally. The Cast group will synchronously stream
         # to all its members (Google handles the timing infrastructure).
         if media_type in _PLAYABLE_TYPES or media_id.startswith(("http://", "https://")):
-            cast_group_entity = self._client.state.active_cast_group_entity
+            cast_group_entity = getattr(self._client.state, "active_cast_group_entity", "")
             if cast_group_entity:
                 _LOGGER.info(
                     "play_media: routing through Cast group %s (url=%s)",
