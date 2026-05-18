@@ -455,17 +455,19 @@ class LitheCastGroupProxy(MediaPlayerEntity):
     state and commands to the underlying Cast group media_player
     entity created by HA's Cast integration.
 
-    The proxy is read-mostly: HA's group dialog only needs name and
-    state. All playback commands forward to the real Cast entity.
+    Hidden from the user's entity dashboard by default — these are
+    machinery to bridge HA's same-integration grouping constraint and
+    the user normally never picks them outside the group dialog.
     """
 
     _attr_has_entity_name = False
     _attr_icon = "mdi:speaker-multiple"
-    _attr_has_entity_name = False
+    # Hide from dashboard / entity lists by default. HA's group picker
+    # still sees them because it lists media_player entities from the
+    # registry regardless of hidden state.
+    _attr_entity_registry_visible_default = False
     # IMPORTANT: GROUPING flag is required for HA's stock player Group
-    # picker to include this entity as a possible join target. Without
-    # it, the picker excludes us even though we share the lithe_audio
-    # domain with the source speaker.
+    # picker to include this entity as a possible join target.
     _attr_supported_features = (
         MediaPlayerEntityFeature.PLAY
         | MediaPlayerEntityFeature.PAUSE
@@ -482,14 +484,12 @@ class LitheCastGroupProxy(MediaPlayerEntity):
         self._cast_name = cast_group["name"]
         self._parent_host = parent_host
         self._attr_unique_id = f"lithe_cast_proxy_{cast_group['entity_id']}"
-        self._attr_name = f"Cast: {cast_group['name']}"
+        self._attr_name = f"{cast_group['name']} (Cast group)"
 
     @property
     def device_info(self) -> DeviceInfo:
-        # Attach to the PARENT Lithe speaker's device (the one whose
-        # setup created this proxy) so the proxy appears as an entity
-        # under that speaker — NOT as a separate device on the main
-        # Devices & Services page. This keeps the device list clean.
+        # Attach to the parent Lithe speaker's device so proxy entities
+        # don't appear as standalone devices on the main devices page.
         return DeviceInfo(
             identifiers={(DOMAIN, self._parent_host)},
         )

@@ -60,6 +60,7 @@ async def async_setup_entry(
             from .group import (
                 get_group_manager,
                 LitheGroupMediaPlayer,
+                create_cast_group_proxies,
             )
             mgr = get_group_manager(hass)
             if mgr:
@@ -75,14 +76,19 @@ async def async_setup_entry(
                     _LOGGER.info("Lithe groups changed — restart required to fully apply add/remove")
                 mgr.register_listener(_on_groups_changed)
 
-            # Note: Google Cast groups are NOT exposed as proxy entities
-            # in the player's Group picker because HA's stock picker
-            # filters by integration and creating proxies pollutes the
-            # device list. Instead, users pick Cast groups via the
-            # dedicated select entity (select.lithe_audio_*_cast_group)
-            # that we register in select.py. The Group icon on the
-            # media_player card is reserved for joining Lithe speakers
-            # to each other (e.g. main + sub woofer pair).
+            # Cast group proxy entities — one media_player per Google
+            # Cast group, hidden from the dashboard but visible in the
+            # stock player Group picker (HA filters by integration, not
+            # by device boundary, so all Lithe speakers see them).
+            # Selecting one routes audio through the underlying Cast
+            # group entity.
+            cast_proxies = create_cast_group_proxies(hass, entry.data["host"])
+            if cast_proxies:
+                entities.extend(cast_proxies)
+                _LOGGER.info(
+                    "Created %d Cast group proxy entities for join picker",
+                    len(cast_proxies),
+                )
         except Exception as e:
             _LOGGER.error("Failed to set up group entities: %s", e)
 
