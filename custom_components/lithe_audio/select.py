@@ -122,6 +122,8 @@ class LitheHighPassSelect(_LitheBaseSelect):
         self._current = "OFF"
 
     async def async_select_option(self, option: str) -> None:
+        # Sniffed values: 0=OFF, 1=60Hz, 2=80Hz, 3=100Hz, 4=120Hz
+        # HP_OPTIONS order matches exactly so we use index directly.
         idx = HP_OPTIONS.index(option) if option in HP_OPTIONS else 0
         self._current = option
         await self._client.async_dsp_command(DSP_HIGHPASS, idx)

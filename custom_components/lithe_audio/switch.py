@@ -105,7 +105,22 @@ class LitheLoudnessSwitch(_LitheBaseSwitch):
 
 
 class LitheBluetoothSwitch(_LitheBaseSwitch):
-    """Bluetooth enable/disable switch (all products)."""
+    """Bluetooth enable/disable switch (all products).
+
+    Sends LUCI MB#209 with payload "ON" or "OFF" per the spec
+    (LibreSync LUCI Tech Note §10.21):
+
+      "ON"  — Change source as bluetooth and turn ON bluetooth.
+      "OFF" — Come out of bluetooth source and turn OFF bluetooth.
+
+    State is read from the speaker rather than a local flag:
+      - source_id == 19 (Bluetooth source) → switch ON
+      - bt_status starts with "BT:READY" or contains "CONNECT" → ON
+      - otherwise → OFF
+
+    We keep a brief 3-second optimistic state after the user toggles so
+    the UI is responsive even before the speaker pushes MB#210.
+    """
 
     _attr_name = "Bluetooth"
     _attr_icon = "mdi:bluetooth"
@@ -113,13 +128,61 @@ class LitheBluetoothSwitch(_LitheBaseSwitch):
     def __init__(self, coordinator, entry):
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.data['host']}_{entry.entry_id}_bluetooth"
+        # Optimistic-state expiry timestamp (event-loop time)
+        self._optimistic_until: float = 0.0
+        self._optimistic_state: bool = False
+
+    @property
+    def is_on(self) -> bool:
+        """Derive state from speaker rather than a local flag.
+
+        Bluetooth is ON when:
+          - we're in the optimistic window after a user toggle, OR
+          - the speaker's current source is Bluetooth (id 19), OR
+          - bt_status reports a connection / ready state
+        """
+        import time
+        if time.monotonic() < self._optimistic_until:
+            return self._optimistic_state
+
+        st = self._client.state
+        # Active BT source means BT is on
+        if st.source_id == 19:
+            return True
+        # bt_status reflects radio state
+        bt = (st.bt_status or "").upper()
+        if bt.startswith("BT:READY") or "CONNECT" in bt or bt == "ON":
+            return True
+        return False
 
     async def async_turn_on(self, **kwargs) -> None:
-        self._state = True
-        await self._client.async_bluetooth(BT_ON)
+        import time
+        # Set optimistic state for 3 seconds while we wait for the
+        # speaker's MB#210 status push to confirm.
+        self._optimistic_state = True
+        self._optimistic_until = time.monotonic() + 3.0
         self.async_write_ha_state()
 
+        await self._client.async_bluetooth(BT_ON)
+
+        # Kick a refresh — request MB#210 status so we get the
+        # confirmation push promptly rather than waiting for poll.
+        try:
+            from .const import MB_BT_STATUS
+            await self._client._send(0x01, MB_BT_STATUS, "")  # noqa: SLF001
+        except Exception:
+            pass
+
     async def async_turn_off(self, **kwargs) -> None:
-        self._state = False
-        await self._client.async_bluetooth(BT_OFF)
+        import time
+        self._optimistic_state = False
+        self._optimistic_until = time.monotonic() + 3.0
         self.async_write_ha_state()
+
+        await self._client.async_bluetooth(BT_OFF)
+
+        try:
+            from .const import MB_BT_STATUS
+            await self._client._send(0x01, MB_BT_STATUS, "")  # noqa: SLF001
+        except Exception:
+            pass
