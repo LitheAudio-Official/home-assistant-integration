@@ -461,6 +461,11 @@ class LitheCastGroupProxy(MediaPlayerEntity):
 
     _attr_has_entity_name = False
     _attr_icon = "mdi:speaker-multiple"
+    _attr_has_entity_name = False
+    # IMPORTANT: GROUPING flag is required for HA's stock player Group
+    # picker to include this entity as a possible join target. Without
+    # it, the picker excludes us even though we share the lithe_audio
+    # domain with the source speaker.
     _attr_supported_features = (
         MediaPlayerEntityFeature.PLAY
         | MediaPlayerEntityFeature.PAUSE
@@ -468,23 +473,25 @@ class LitheCastGroupProxy(MediaPlayerEntity):
         | MediaPlayerEntityFeature.VOLUME_SET
         | MediaPlayerEntityFeature.VOLUME_MUTE
         | MediaPlayerEntityFeature.PLAY_MEDIA
+        | MediaPlayerEntityFeature.GROUPING
     )
 
-    def __init__(self, hass: HomeAssistant, cast_group: dict) -> None:
+    def __init__(self, hass: HomeAssistant, cast_group: dict, parent_host: str) -> None:
         self.hass = hass
         self._cast_entity_id = cast_group["entity_id"]
         self._cast_name = cast_group["name"]
+        self._parent_host = parent_host
         self._attr_unique_id = f"lithe_cast_proxy_{cast_group['entity_id']}"
         self._attr_name = f"Cast: {cast_group['name']}"
 
     @property
     def device_info(self) -> DeviceInfo:
+        # Attach to the PARENT Lithe speaker's device (the one whose
+        # setup created this proxy) so the proxy appears as an entity
+        # under that speaker — NOT as a separate device on the main
+        # Devices & Services page. This keeps the device list clean.
         return DeviceInfo(
-            identifiers={(DOMAIN, f"cast_proxy_{self._cast_entity_id}")},
-            name=f"Cast: {self._cast_name}",
-            manufacturer="Google",
-            model="Cast Group (via Lithe Audio)",
-            entry_type=None,
+            identifiers={(DOMAIN, self._parent_host)},
         )
 
     def _cast_state(self):
@@ -554,15 +561,17 @@ class LitheCastGroupProxy(MediaPlayerEntity):
         })
 
 
-def create_cast_group_proxies(hass: HomeAssistant) -> list:
+def create_cast_group_proxies(hass: HomeAssistant, parent_host: str) -> list:
     """Build proxy entities for each discovered Cast group.
 
-    Called once at setup. New Cast groups added later require a HA
-    restart to appear (this matches Sonos's pattern — group changes
-    typically come via re-integration).
+    All proxies attach to the parent speaker's device so they appear
+    as entities under that speaker rather than as standalone devices.
+
+    Called once at setup for the first Lithe speaker that loads.
+    New Cast groups added later require a HA restart to appear.
     """
     proxies = []
     for cg in discover_cast_groups(hass):
-        proxies.append(LitheCastGroupProxy(hass, cg))
+        proxies.append(LitheCastGroupProxy(hass, cg, parent_host))
     return proxies
 

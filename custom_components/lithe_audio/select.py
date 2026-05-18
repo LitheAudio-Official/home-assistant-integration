@@ -85,10 +85,9 @@ class LitheEqSelect(_LitheBaseSelect):
 
     @property
     def current_option(self) -> str:
-        """Read live from speaker state — reflects app changes."""
-        idx = self._client.state.dsp_eq
-        if idx is not None and 0 <= idx < len(EQ_PRESETS):
-            return EQ_PRESETS[idx]
+        # Use local _current — TX is byte-verified identical to the
+        # Lithe app's wire packets (sniffer 2026-05-18). The local
+        # value is authoritative since we just sent it.
         return self._current
 
     async def async_select_option(self, option: str) -> None:
@@ -112,9 +111,7 @@ class LitheOutputSelect(_LitheBaseSelect):
 
     @property
     def current_option(self) -> str:
-        idx = self._client.state.dsp_output
-        if idx is not None and 0 <= idx < len(OUT_OPTIONS):
-            return OUT_OPTIONS[idx]
+        # Use local _current — TX is byte-verified identical to the app.
         return self._current
 
     async def async_select_option(self, option: str) -> None:

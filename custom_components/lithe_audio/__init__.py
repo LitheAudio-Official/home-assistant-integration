@@ -79,6 +79,60 @@ def _infer_product(entry_data: dict) -> str:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Lithe Audio from a config entry."""
+    # Version banner — helps diagnose partial-install issues. The user
+    # can grep the log for this line to confirm the running version.
+    def _read_install_info() -> tuple[str, list[str]]:
+        """Read manifest version + check critical files for staleness.
+
+        Runs in executor to avoid blocking the event loop with sync I/O.
+        Returns (version, list_of_stale_files).
+        """
+        import json as _json
+        from pathlib import Path as _Path
+        _here = _Path(__file__).parent
+        _version = "unknown"
+        _mpath = _here / "manifest.json"
+        if _mpath.exists():
+            try:
+                with open(_mpath) as _f:
+                    _version = _json.load(_f).get("version", "unknown")
+            except Exception:
+                pass
+        # Critical-file freshness check via known markers in current code
+        _expected_markers = {
+            "lithe_client.py": "Sniffer-confirmed mappings (2026-05-18)",
+            "card_resource.py": "Probe filesystem in executor",
+            "switch.py": "2-way sync (factually verified 2026-05-18)",
+            "number.py": "2-way sync (factually verified 2026-05-18)",
+        }
+        _stale: list[str] = []
+        for _fname, _marker in _expected_markers.items():
+            _fpath = _here / _fname
+            try:
+                _text = _fpath.read_text(encoding="utf-8", errors="ignore")
+                if _marker not in _text:
+                    _stale.append(_fname)
+            except Exception:
+                pass
+        return _version, _stale
+
+    try:
+        _version, _stale = await hass.async_add_executor_job(_read_install_info)
+        _LOGGER.warning(
+            "=== Lithe Audio integration starting — manifest version %s ===",
+            _version,
+        )
+        for _fname in _stale:
+            _LOGGER.error(
+                "PARTIAL INSTALL DETECTED: %s is STALE (missing marker). "
+                "Delete /config/custom_components/lithe_audio/ entirely "
+                "and reinstall v%s. Bug reports from a partial install "
+                "won't be reproducible.",
+                _fname, _version,
+            )
+    except Exception:
+        pass
+
     # Migration: entries created by older versions may not have `product`.
     if CONF_PRODUCT not in entry.data:
         inferred = _infer_product({**entry.data, "title": entry.title})

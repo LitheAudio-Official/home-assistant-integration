@@ -69,15 +69,34 @@ class LitheLoudnessNumber(_LitheBaseNumber):
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.data['host']}_{entry.entry_id}_loudness"
         self._value = 0
+        self._optimistic_until: float = 0.0
 
     @property
     def native_value(self) -> float:
-        # Use local _value — speaker does not push MB#112 confirmation
-        # for sub-MB 0x16, so reading state.dsp_loudness would be stale.
+        """Loudness slider value.
+
+        2-way sync (factually verified 2026-05-18):
+          - HA → speaker: TX sub-MB 0x16, signed -10..+10
+          - App → HA: speaker broadcasts as sub-MB 0x34, wire byte 0..20
+            which the parser decodes to -10..+10 and stores in
+            state.dsp_loudness.
+
+        UI strategy: prefer speaker state, but use local _value during
+        a 5-second optimistic window after a HA toggle to avoid
+        flipback if the speaker hasn't echoed yet.
+        """
+        import time
+        if time.monotonic() < self._optimistic_until:
+            return float(self._value)
+        val = getattr(self._client.state, "dsp_loudness", None)
+        if val is not None:
+            return float(val)
         return float(self._value)
 
     async def async_set_native_value(self, value: float) -> None:
+        import time
         self._value = int(value)
+        self._optimistic_until = time.monotonic() + 5.0
         await self._client.async_dsp_command(DSP_LOUDNESS, self._value)
         self.async_write_ha_state()
 

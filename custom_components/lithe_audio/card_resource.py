@@ -35,8 +35,20 @@ async def async_register_card(hass: HomeAssistant) -> None:
     card_path = integration_dir / CARD_FILENAME
     icons_dir = integration_dir / "icons"
 
+    # Probe filesystem in executor to avoid blocking the event loop
+    def _scan_paths() -> tuple[bool, list[str]]:
+        card_exists = card_path.exists()
+        icon_names: list[str] = []
+        if icons_dir.exists():
+            for icon_file in icons_dir.iterdir():
+                if icon_file.suffix.lower() == ".png":
+                    icon_names.append(icon_file.name)
+        return card_exists, icon_names
+
+    card_exists, icon_names = await hass.async_add_executor_job(_scan_paths)
+
     # 1) Serve the card JS at /lithe_audio_card.js
-    if card_path.exists():
+    if card_exists:
         try:
             await hass.http.async_register_static_paths([
                 StaticPathConfig(CARD_URL, str(card_path), cache_headers=False),
@@ -48,22 +60,21 @@ async def async_register_card(hass: HomeAssistant) -> None:
     # 2) Serve the icon files at /lithe_audio_assets/{icon,logo}.png etc.
     # These are used as entity_picture / device_image so the icon appears
     # on the device card without requiring the brands repo PR.
-    if icons_dir.exists():
+    if icon_names:
         try:
-            paths = []
-            for icon_file in icons_dir.iterdir():
-                if icon_file.suffix.lower() == ".png":
-                    paths.append(StaticPathConfig(
-                        f"/lithe_audio_assets/{icon_file.name}",
-                        str(icon_file),
-                        cache_headers=True,
-                    ))
-            if paths:
-                await hass.http.async_register_static_paths(paths)
-                _LOGGER.info(
-                    "Lithe Audio icons served at /lithe_audio_assets/ "
-                    "(%d files)", len(paths),
+            paths = [
+                StaticPathConfig(
+                    f"/lithe_audio_assets/{name}",
+                    str(icons_dir / name),
+                    cache_headers=True,
                 )
+                for name in icon_names
+            ]
+            await hass.http.async_register_static_paths(paths)
+            _LOGGER.info(
+                "Lithe Audio icons served at /lithe_audio_assets/ "
+                "(%d files)", len(paths),
+            )
         except Exception as e:
             _LOGGER.debug("Icon static path registration: %s", e)
 

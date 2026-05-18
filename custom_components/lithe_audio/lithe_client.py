@@ -1028,36 +1028,47 @@ class LitheClient:
                     DSP_HIGHPASS, DSP_TUNING, DSP_BALANCE, DSP_OUTPUT,
                 )
 
-                # Map sub-MB ID → SpeakerState attribute name + signed flag.
+                # Map sub-MB ID → (SpeakerState attribute, decode function).
                 #
-                # The Lithe firmware uses ASYMMETRIC sub-MB codes:
-                # - TX (controller → speaker) uses the modern codes
-                #   0x16, 0x18, 0x1A, 0x1C, 0x1D, 0x1E
+                # The Lithe firmware uses ASYMMETRIC sub-MB codes AND
+                # sometimes asymmetric value encodings:
+                # - TX (controller → speaker) uses modern codes:
+                #     0x16 (loudness, signed -10..+10)
+                #     0x18 (night mode, 0/1)
+                #     0x1A (highpass, 0..4)
+                #     0x1C (output, 0..3)
+                #     0x1D (tuning, 0/1)
+                #     0x1E (balance, signed -6..+6)
                 # - RX broadcast (speaker → all clients, fired when the
                 #   *app* changes a setting via HOST MCU path) uses
-                #   LEGACY codes 0x0C, 0x0D, 0x29, etc.
+                #   LEGACY codes with potentially DIFFERENT encodings.
                 #
                 # Sniffer-confirmed mappings (2026-05-18):
-                #   Night Mode  TX 0x18 ⟷ RX broadcast 0x0C  ✓ proven
+                #   Night Mode  TX 0x18  ⟷ RX 0x0C, 0/1                 ✓ proven
+                #   Loudness    TX 0x16  ⟷ RX 0x34, 0..20 (offset +10)  ✓ proven
                 #
-                # Without confirmed proof from a focused per-setting
-                # sniffer test we do NOT map the legacy codes for other
-                # settings. The earlier "0x0D, 0x29, 0x15, 0x20, 0x21,
-                # 0x32-0x34" cluster appeared in one log but we don't
-                # know which legacy code maps to which TX function
-                # individually. Adding them speculatively risks breaking
-                # already-working behaviour. Add more entries only after
-                # confirmation.
-                _DSP_MAP: dict[int, tuple[str, bool]] = {
-                    DSP_EQ:        ("dsp_eq",        False),
-                    DSP_TREBLE:    ("dsp_treble",    True),   # signed
-                    DSP_LOUDNESS:  ("dsp_loudness",  True),   # signed -10..+10
-                    DSP_NIGHTMODE: ("dsp_nightmode", False),
-                    0x0C:          ("dsp_nightmode", False),  # legacy RX broadcast (sniffer-confirmed)
-                    DSP_HIGHPASS:  ("dsp_highpass",  False),
-                    DSP_TUNING:    ("dsp_tuning",    False),
-                    DSP_BALANCE:   ("dsp_balance",   True),   # signed -6..+6
-                    DSP_OUTPUT:    ("dsp_output",    False),
+                # Decode functions take the raw byte and return the
+                # value to store in state.dsp_* (matching the displayed
+                # scale that HA entities use).
+                def _signed_8(b: int) -> int:
+                    return b - 256 if b > 127 else b
+                def _unsigned(b: int) -> int:
+                    return b
+                def _loudness_unsigned_offset(b: int) -> int:
+                    # Speaker broadcast encoding: wire 0..20 → display -10..+10
+                    return b - 10
+
+                _DSP_MAP: dict[int, tuple[str, callable]] = {
+                    DSP_EQ:        ("dsp_eq",        _unsigned),
+                    DSP_TREBLE:    ("dsp_treble",    _signed_8),
+                    DSP_LOUDNESS:  ("dsp_loudness",  _signed_8),  # TX echo (signed)
+                    0x34:          ("dsp_loudness",  _loudness_unsigned_offset),  # RX broadcast 0..20 (sniffer-confirmed)
+                    DSP_NIGHTMODE: ("dsp_nightmode", _unsigned),
+                    0x0C:          ("dsp_nightmode", _unsigned),  # RX broadcast (sniffer-confirmed)
+                    DSP_HIGHPASS:  ("dsp_highpass",  _unsigned),
+                    DSP_TUNING:    ("dsp_tuning",    _unsigned),
+                    DSP_BALANCE:   ("dsp_balance",   _signed_8),
+                    DSP_OUTPUT:    ("dsp_output",    _unsigned),
                 }
 
                 raw = payload.encode("latin-1") if isinstance(payload, str) else payload
@@ -1075,9 +1086,8 @@ class LitheClient:
                         val_byte = raw[i+4]
                         parsed.append(f"push sub=0x{sub_mb:02x}({sub_mb}) val={val_byte}")
                         if sub_mb in _DSP_MAP:
-                            attr, signed = _DSP_MAP[sub_mb]
-                            v = val_byte - 256 if (signed and val_byte > 127) else val_byte
-                            updates.append((attr, v))
+                            attr, decode = _DSP_MAP[sub_mb]
+                            updates.append((attr, decode(val_byte)))
                         i += 5
                     # SET response / GET response — 00 04 <subMB hi> <subMB lo> [status] <value>
                     elif raw[i] == 0x00 and raw[i+1] == 0x04 and i + 6 <= len(raw):
@@ -1085,20 +1095,17 @@ class LitheClient:
                         val_byte = raw[i+5]
                         parsed.append(f"resp sub=0x{sub_mb:02x}({sub_mb}) val={val_byte}")
                         if sub_mb in _DSP_MAP:
-                            attr, signed = _DSP_MAP[sub_mb]
-                            v = val_byte - 256 if (signed and val_byte > 127) else val_byte
-                            updates.append((attr, v))
+                            attr, decode = _DSP_MAP[sub_mb]
+                            updates.append((attr, decode(val_byte)))
                         i += 6
                     # GET response variant: 00 05 <hi> <lo> <value> (5 bytes)
-                    # Some firmwares use this shape when replying to GET.
                     elif raw[i] == 0x00 and raw[i+1] == 0x05 and i + 5 <= len(raw):
                         sub_mb = raw[i+3]
                         val_byte = raw[i+4]
                         parsed.append(f"get-resp sub=0x{sub_mb:02x}({sub_mb}) val={val_byte}")
                         if sub_mb in _DSP_MAP:
-                            attr, signed = _DSP_MAP[sub_mb]
-                            v = val_byte - 256 if (signed and val_byte > 127) else val_byte
-                            updates.append((attr, v))
+                            attr, decode = _DSP_MAP[sub_mb]
+                            updates.append((attr, decode(val_byte)))
                         i += 5
                     else:
                         i += 1
