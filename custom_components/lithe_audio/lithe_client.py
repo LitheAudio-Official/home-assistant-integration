@@ -1028,12 +1028,32 @@ class LitheClient:
                     DSP_HIGHPASS, DSP_TUNING, DSP_BALANCE, DSP_OUTPUT,
                 )
 
-                # Map sub-MB ID → SpeakerState attribute name + signed flag
+                # Map sub-MB ID → SpeakerState attribute name + signed flag.
+                #
+                # The Lithe firmware uses ASYMMETRIC sub-MB codes:
+                # - TX (controller → speaker) uses the modern codes
+                #   0x16, 0x18, 0x1A, 0x1C, 0x1D, 0x1E
+                # - RX broadcast (speaker → all clients, fired when the
+                #   *app* changes a setting via HOST MCU path) uses
+                #   LEGACY codes 0x0C, 0x0D, 0x29, etc.
+                #
+                # Sniffer-confirmed mappings (2026-05-18):
+                #   Night Mode  TX 0x18 ⟷ RX broadcast 0x0C  ✓ proven
+                #
+                # Without confirmed proof from a focused per-setting
+                # sniffer test we do NOT map the legacy codes for other
+                # settings. The earlier "0x0D, 0x29, 0x15, 0x20, 0x21,
+                # 0x32-0x34" cluster appeared in one log but we don't
+                # know which legacy code maps to which TX function
+                # individually. Adding them speculatively risks breaking
+                # already-working behaviour. Add more entries only after
+                # confirmation.
                 _DSP_MAP: dict[int, tuple[str, bool]] = {
                     DSP_EQ:        ("dsp_eq",        False),
                     DSP_TREBLE:    ("dsp_treble",    True),   # signed
                     DSP_LOUDNESS:  ("dsp_loudness",  True),   # signed -10..+10
                     DSP_NIGHTMODE: ("dsp_nightmode", False),
+                    0x0C:          ("dsp_nightmode", False),  # legacy RX broadcast (sniffer-confirmed)
                     DSP_HIGHPASS:  ("dsp_highpass",  False),
                     DSP_TUNING:    ("dsp_tuning",    False),
                     DSP_BALANCE:   ("dsp_balance",   True),   # signed -6..+6

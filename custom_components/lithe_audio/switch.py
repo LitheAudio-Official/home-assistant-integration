@@ -63,7 +63,20 @@ class _LitheBaseSwitch(CoordinatorEntity[LitheAudioCoordinator], SwitchEntity):
 
 
 class LitheNightModeSwitch(_LitheBaseSwitch):
-    """Night Mode switch."""
+    """Night Mode switch.
+
+    2-way sync (factually verified 2026-05-18):
+      - HA → speaker: TX sub-MB 0x18, byte-identical to Lithe app
+        (sniffer-confirmed). Speaker accepts but does NOT push
+        confirmation back to our LUCI session.
+      - App → speaker → HA: when the Lithe app changes Night Mode,
+        the speaker broadcasts the change as legacy sub-MB 0x0C to
+        all connected clients. Our parser maps 0x0C → dsp_nightmode.
+
+    UI strategy: prefer speaker state (so app changes are reflected),
+    but use local _state during a 5-second optimistic window after a
+    user toggle (covers wire latency without flipping back).
+    """
 
     _attr_name = "Night Mode"
     _attr_icon = "mdi:weather-night"
@@ -71,25 +84,32 @@ class LitheNightModeSwitch(_LitheBaseSwitch):
     def __init__(self, coordinator, entry):
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.data['host']}_{entry.entry_id}_nightmode"
+        self._optimistic_until: float = 0.0
 
     @property
     def is_on(self) -> bool:
-        """Use local state — speaker does not push MB#112 confirmation
-        for sub-MB 0x18, so reading state.dsp_nightmode would be stale.
-
-        The local _state is authoritative because we just sent the
-        command and the wire bytes are identical to the Lithe app's
-        (verified by packet sniffer 2026-05-18).
-        """
+        import time
+        # Inside optimistic window — trust the value the user just set.
+        if time.monotonic() < self._optimistic_until:
+            return self._state
+        # After window — prefer speaker state if known (gets updated by
+        # legacy 0x0C broadcasts when the app changes Night Mode).
+        val = getattr(self._client.state, "dsp_nightmode", None)
+        if val is not None:
+            return val == 1
         return self._state
 
     async def async_turn_on(self, **kwargs) -> None:
+        import time
         self._state = True
+        self._optimistic_until = time.monotonic() + 5.0
         await self._client.async_dsp_command(DSP_NIGHTMODE, 1)
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs) -> None:
+        import time
         self._state = False
+        self._optimistic_until = time.monotonic() + 5.0
         await self._client.async_dsp_command(DSP_NIGHTMODE, 0)
         self.async_write_ha_state()
 
