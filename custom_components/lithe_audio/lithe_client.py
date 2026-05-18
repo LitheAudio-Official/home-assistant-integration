@@ -310,63 +310,6 @@ class LitheClient:
         await self._send(0x02, MB_NETWORK_INFO, "MACADDR")
         await asyncio.sleep(0.05)
 
-        # DSP state poll — the speaker doesn't auto-broadcast changes
-        # made in the Lithe app on the same LUCI session (per spec §8.4.2
-        # broadcasts only fire when HOST MCU sends MB#112, which the app's
-        # SETs don't seem to trigger). So we explicitly query each DSP
-        # sub-MB and parse the response. This gives 2-way sync with the
-        # app — DSP changes made there appear in HA on the next refresh.
-        await self._poll_dsp_state()
-
-    async def _poll_dsp_state(self) -> None:
-        """Query every DSP sub-MB via the MB#112 tunnel.
-
-        The DSP tunnel GET shape is the same as SET but with cmd byte
-        0x01 instead of 0x02 (no value):
-
-          [00 04 sub_hi sub_lo 01]   ← GET request (5 bytes inside tunnel)
-
-        Speaker replies with the current value as a normal push packet:
-
-          [00 03 sub_hi sub_lo val]  ← value (5 bytes inside tunnel)
-
-        Our existing MB#112 RX parser handles those pushes and updates
-        state.dsp_* fields, so entities pick up the change automatically.
-        """
-        from .const import (
-            DSP_EQ, DSP_TREBLE, DSP_LOUDNESS, DSP_NIGHTMODE,
-            DSP_HIGHPASS, DSP_TUNING, DSP_BALANCE, DSP_OUTPUT,
-        )
-
-        DSP_SUB_MBS = [
-            DSP_EQ, DSP_TREBLE, DSP_LOUDNESS, DSP_NIGHTMODE,
-            DSP_HIGHPASS, DSP_TUNING, DSP_BALANCE, DSP_OUTPUT,
-        ]
-
-        if not self._writer or self._writer.is_closing():
-            return
-
-        for sub_mb in DSP_SUB_MBS:
-            try:
-                # GET inside MB#112 tunnel
-                sub = bytes([
-                    0x00, 0x04,
-                    (sub_mb >> 8) & 0xFF, sub_mb & 0xFF,
-                    0x01,  # 0x01 = GET (vs 0x02 SET)
-                ])
-                data_len = len(sub)
-                header = struct.pack(
-                    "<HBHBHH", 0xAAAA, 0x02, MB_DSP, 0, 0x0000, data_len
-                )
-                pkt = header + sub + b"\x00"
-                self._writer.write(pkt)
-                await self._writer.drain()
-                await asyncio.sleep(0.03)  # let speaker reply before next
-            except Exception as e:
-                _LOGGER.debug("DSP poll sub=0x%02x failed: %s", sub_mb, e)
-                return
-        await asyncio.sleep(0.05)
-
         # MB#70 Favourites — SET FAV_LIST is the documented query form
         await self._send(0x02, MB_FAVOURITES, "FAV_LIST")
         await asyncio.sleep(0.05)
