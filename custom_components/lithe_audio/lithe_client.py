@@ -71,12 +71,31 @@ class SpeakerState:
     # Bluetooth
     bt_status: str = ""
 
+    # DSP state — populated from MB#112 push packets so HA reflects
+    # changes made in the Lithe app (2-way sync). Sub-MB IDs verified
+    # from app packet capture (dsp-sniffer, 2026-05-17):
+    dsp_eq:        int | None = None  # 0x0A: 0=Normal 1=Acoustic 2=Jazz 3=Pop 4=HipHop
+    dsp_treble:    int | None = None  # 0x09: signed
+    dsp_loudness:  int | None = None  # 0x16: signed -10..+10
+    dsp_nightmode: int | None = None  # 0x18: 0=OFF 1=ON
+    dsp_highpass:  int | None = None  # 0x1A: 0=OFF 1=60Hz 2=80Hz 3=100Hz 4=120Hz
+    dsp_tuning:    int | None = None  # 0x1D: 0=Enclosure 13L, 1=Open Back
+    dsp_balance:   int | None = None  # 0x1E: signed -6..+6
+    dsp_output:    int | None = None  # 0x0F: 0=Mono 1=Stereo 2=Left 3=Right
+
     # Player role (per API_NEW page 25): "Free" / "Master" / "Slave"
     # Slave devices cannot trigger chimes — they must be sent to the master.
     player_role: str = ""
 
     # Favourites
     favourites: list = field(default_factory=list)  # [{slot:int, name:str}]
+
+    # Cast group — non-empty when user selected a Cast group from the
+    # source list. Subsequent play_media calls route through this Cast
+    # group's media_player entity (true multi-room sync via Google's
+    # cloud infra). Cleared when user picks any other source.
+    active_cast_group: str = ""        # display name, e.g. "Kitchen Group"
+    active_cast_group_entity: str = "" # e.g. "media_player.kitchen_group"
 
     # Connection
     connected: bool = False
@@ -289,6 +308,63 @@ class LitheClient:
 
         # MB#91 NETWORK INFO requires SET MACADDR payload (per spec §9.35)
         await self._send(0x02, MB_NETWORK_INFO, "MACADDR")
+        await asyncio.sleep(0.05)
+
+        # DSP state poll — the speaker doesn't auto-broadcast changes
+        # made in the Lithe app on the same LUCI session (per spec §8.4.2
+        # broadcasts only fire when HOST MCU sends MB#112, which the app's
+        # SETs don't seem to trigger). So we explicitly query each DSP
+        # sub-MB and parse the response. This gives 2-way sync with the
+        # app — DSP changes made there appear in HA on the next refresh.
+        await self._poll_dsp_state()
+
+    async def _poll_dsp_state(self) -> None:
+        """Query every DSP sub-MB via the MB#112 tunnel.
+
+        The DSP tunnel GET shape is the same as SET but with cmd byte
+        0x01 instead of 0x02 (no value):
+
+          [00 04 sub_hi sub_lo 01]   ← GET request (5 bytes inside tunnel)
+
+        Speaker replies with the current value as a normal push packet:
+
+          [00 03 sub_hi sub_lo val]  ← value (5 bytes inside tunnel)
+
+        Our existing MB#112 RX parser handles those pushes and updates
+        state.dsp_* fields, so entities pick up the change automatically.
+        """
+        from .const import (
+            DSP_EQ, DSP_TREBLE, DSP_LOUDNESS, DSP_NIGHTMODE,
+            DSP_HIGHPASS, DSP_TUNING, DSP_BALANCE, DSP_OUTPUT,
+        )
+
+        DSP_SUB_MBS = [
+            DSP_EQ, DSP_TREBLE, DSP_LOUDNESS, DSP_NIGHTMODE,
+            DSP_HIGHPASS, DSP_TUNING, DSP_BALANCE, DSP_OUTPUT,
+        ]
+
+        if not self._writer or self._writer.is_closing():
+            return
+
+        for sub_mb in DSP_SUB_MBS:
+            try:
+                # GET inside MB#112 tunnel
+                sub = bytes([
+                    0x00, 0x04,
+                    (sub_mb >> 8) & 0xFF, sub_mb & 0xFF,
+                    0x01,  # 0x01 = GET (vs 0x02 SET)
+                ])
+                data_len = len(sub)
+                header = struct.pack(
+                    "<HBHBHH", 0xAAAA, 0x02, MB_DSP, 0, 0x0000, data_len
+                )
+                pkt = header + sub + b"\x00"
+                self._writer.write(pkt)
+                await self._writer.drain()
+                await asyncio.sleep(0.03)  # let speaker reply before next
+            except Exception as e:
+                _LOGGER.debug("DSP poll sub=0x%02x failed: %s", sub_mb, e)
+                return
         await asyncio.sleep(0.05)
 
         # MB#70 Favourites — SET FAV_LIST is the documented query form
@@ -970,32 +1046,89 @@ class LitheClient:
                 _LOGGER.info("Audiocue completed successfully")
 
         elif mbid == MB_DSP:
-            # Payload is binary DSP sub-packet(s). Decode for visibility.
-            # Push format (5 bytes): 00 03 <subMB_hi> <subMB_lo> <value>
-            # SET response (6 bytes): 00 04 <subMB_hi> <subMB_lo> 02 <value>
-            # Multiple sub-packets may be concatenated.
+            # Payload is binary DSP sub-packet(s) — see vendor packet
+            # capture for the on-wire format.
+            #
+            # Push format     (5 bytes): 00 03 <subMB_hi> <subMB_lo> <value>
+            # SET response    (6 bytes): 00 04 <subMB_hi> <subMB_lo> 02 <value>
+            #
+            # Multiple sub-packets may be concatenated in one MB#112 frame.
+            # We populate state.dsp_* fields so HA entities (selects,
+            # switches, numbers) reflect changes made in the Lithe app
+            # — 2-way sync.
             try:
+                from .const import (
+                    DSP_EQ, DSP_TREBLE, DSP_LOUDNESS, DSP_NIGHTMODE,
+                    DSP_HIGHPASS, DSP_TUNING, DSP_BALANCE, DSP_OUTPUT,
+                )
+
+                # Map sub-MB ID → SpeakerState attribute name + signed flag
+                _DSP_MAP: dict[int, tuple[str, bool]] = {
+                    DSP_EQ:        ("dsp_eq",        False),
+                    DSP_TREBLE:    ("dsp_treble",    True),   # signed
+                    DSP_LOUDNESS:  ("dsp_loudness",  True),   # signed -10..+10
+                    DSP_NIGHTMODE: ("dsp_nightmode", False),
+                    DSP_HIGHPASS:  ("dsp_highpass",  False),
+                    DSP_TUNING:    ("dsp_tuning",    False),
+                    DSP_BALANCE:   ("dsp_balance",   True),   # signed -6..+6
+                    DSP_OUTPUT:    ("dsp_output",    False),
+                }
+
                 raw = payload.encode("latin-1") if isinstance(payload, str) else payload
-                if _LOGGER.isEnabledFor(logging.DEBUG):
-                    parsed = []
-                    i = 0
-                    while i + 5 <= len(raw):
-                        if raw[i] == 0x00 and raw[i+1] == 0x03 and i + 5 <= len(raw):
-                            sub_mb = (raw[i+2] << 8) | raw[i+3]
-                            val = raw[i+4]
-                            parsed.append(f"sub=0x{sub_mb:02x}({sub_mb}) val={val}")
-                            i += 5
-                        elif raw[i] == 0x00 and raw[i+1] == 0x04 and i + 6 <= len(raw):
-                            sub_mb = (raw[i+2] << 8) | raw[i+3]
-                            val = raw[i+5]
-                            parsed.append(f"SET sub=0x{sub_mb:02x}({sub_mb}) val={val}")
-                            i += 6
+                parsed = []
+                updates: list[tuple[str, int]] = []
+                i = 0
+                while i + 5 <= len(raw):
+                    # Push packet — 00 03 <subMB hi> <subMB lo> <value>
+                    if raw[i] == 0x00 and raw[i+1] == 0x03 and i + 5 <= len(raw):
+                        sub_mb = (raw[i+2] << 8) | raw[i+3]
+                        if sub_mb > 0xFF:
+                            sub_mb = raw[i+3]
                         else:
-                            i += 1
-                    if parsed:
-                        _LOGGER.debug("DSP MB#112 decoded: %s", "; ".join(parsed))
-            except Exception:
-                pass
+                            sub_mb = sub_mb if sub_mb else raw[i+3]
+                        val_byte = raw[i+4]
+                        parsed.append(f"push sub=0x{sub_mb:02x}({sub_mb}) val={val_byte}")
+                        if sub_mb in _DSP_MAP:
+                            attr, signed = _DSP_MAP[sub_mb]
+                            v = val_byte - 256 if (signed and val_byte > 127) else val_byte
+                            updates.append((attr, v))
+                        i += 5
+                    # SET response / GET response — 00 04 <subMB hi> <subMB lo> [status] <value>
+                    elif raw[i] == 0x00 and raw[i+1] == 0x04 and i + 6 <= len(raw):
+                        sub_mb = raw[i+3]  # low byte; high byte is 0
+                        val_byte = raw[i+5]
+                        parsed.append(f"resp sub=0x{sub_mb:02x}({sub_mb}) val={val_byte}")
+                        if sub_mb in _DSP_MAP:
+                            attr, signed = _DSP_MAP[sub_mb]
+                            v = val_byte - 256 if (signed and val_byte > 127) else val_byte
+                            updates.append((attr, v))
+                        i += 6
+                    # GET response variant: 00 05 <hi> <lo> <value> (5 bytes)
+                    # Some firmwares use this shape when replying to GET.
+                    elif raw[i] == 0x00 and raw[i+1] == 0x05 and i + 5 <= len(raw):
+                        sub_mb = raw[i+3]
+                        val_byte = raw[i+4]
+                        parsed.append(f"get-resp sub=0x{sub_mb:02x}({sub_mb}) val={val_byte}")
+                        if sub_mb in _DSP_MAP:
+                            attr, signed = _DSP_MAP[sub_mb]
+                            v = val_byte - 256 if (signed and val_byte > 127) else val_byte
+                            updates.append((attr, v))
+                        i += 5
+                    else:
+                        i += 1
+
+                # Apply state updates
+                for attr, val in updates:
+                    setattr(self.state, attr, val)
+
+                if _LOGGER.isEnabledFor(logging.DEBUG) and parsed:
+                    _LOGGER.debug(
+                        "DSP MB#112 decoded: %s%s",
+                        "; ".join(parsed),
+                        f" → updated {len(updates)} fields" if updates else "",
+                    )
+            except Exception as e:
+                _LOGGER.debug("DSP MB#112 parse error: %s", e)
 
         elif mbid == MB_BT_STATUS:
             self.state.bt_status = payload.strip()
