@@ -90,6 +90,33 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         new_data = {**entry.data, CONF_PRODUCT: inferred}
         hass.config_entries.async_update_entry(entry, data=new_data)
 
+    # Cleanup: v1.1.98 registered Cast group proxy entities and devices
+    # under the lithe_audio domain. v1.1.99 removed that approach.
+    # Remove any leftover registry entries so they don't show as ghosts.
+    try:
+        from homeassistant.helpers import device_registry as dr, entity_registry as er
+        ent_reg = er.async_get(hass)
+        dev_reg = dr.async_get(hass)
+        # Remove stale proxy ENTITIES (unique_id starts with lithe_cast_proxy_)
+        stale_entity_ids = [
+            e.entity_id for e in ent_reg.entities.values()
+            if e.platform == DOMAIN
+            and e.unique_id
+            and e.unique_id.startswith("lithe_cast_proxy_")
+        ]
+        for eid in stale_entity_ids:
+            ent_reg.async_remove(eid)
+            _LOGGER.info("Removed stale Cast proxy entity: %s", eid)
+        # Remove stale proxy DEVICES (identifier starts with cast_proxy_)
+        for dev in list(dev_reg.devices.values()):
+            for domain, ident in dev.identifiers:
+                if domain == DOMAIN and isinstance(ident, str) and ident.startswith("cast_proxy_"):
+                    dev_reg.async_remove_device(dev.id)
+                    _LOGGER.info("Removed stale Cast proxy device: %s", dev.name or dev.id)
+                    break
+    except Exception as e:
+        _LOGGER.debug("Cast proxy cleanup skipped: %s", e)
+
     product = entry.data[CONF_PRODUCT]
     host    = entry.data[CONF_HOST]
     port    = entry.data.get(CONF_PORT, 7777)
