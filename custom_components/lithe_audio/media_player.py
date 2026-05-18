@@ -491,46 +491,59 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
     def group_members(self) -> list[str]:
         """Entity_ids currently joined to this speaker.
 
-        When a Cast group is active, return that Cast group's entity_id
-        so HA shows it as 'joined' in the player card. Otherwise empty.
+        When a Cast group is active, return the PROXY entity_id (the
+        one HA's picker displays under our integration) so the picker
+        shows the correct row as ticked when re-opened. Resolves via
+        entity_registry from the underlying Cast entity_id.
         """
         cg_entity = getattr(self._client.state, "active_cast_group_entity", "")
-        if cg_entity:
-            return [self.entity_id, cg_entity]
-        return []
+        if not cg_entity:
+            return []
+        # Find the proxy whose unique_id wraps this Cast entity
+        try:
+            from homeassistant.helpers import entity_registry as er
+            ent_reg = er.async_get(self.hass)
+            proxy_uid = f"lithe_cast_proxy_{cg_entity}"
+            for ent in ent_reg.entities.values():
+                if ent.platform == "lithe_audio" and ent.unique_id == proxy_uid:
+                    return [self.entity_id, ent.entity_id]
+        except Exception:
+            pass
+        # Fallback: return the underlying entity if proxy lookup fails
+        return [self.entity_id, cg_entity]
 
     async def async_join_players(self, group_members: list[str]) -> None:
         """Route this speaker's audio through a Cast group.
 
-        HA's stock Group dialog passes selected target entities here.
-        We accept:
+        HA's Group dialog passes ALL ticked entities here. Lithe can
+        only route through ONE Cast group at a time, so if multiple
+        are selected we take the LAST one (most recently toggled).
+
+        Accepts:
           - Direct Cast group entities (from HA's Cast integration), or
           - Our LitheCastGroupProxy entities (which represent Cast groups
             but belong to our integration so they appear in HA's picker).
 
-        The picked target is recorded as the active Cast group; any
-        later play_media goes through it. If the user picks a non-Cast
-        entity (e.g. another Lithe speaker), we log a warning and ignore
-        — Lithe firmware can't sync with arbitrary speakers.
+        Non-Cast entities (other Lithe speakers) are ignored — Lithe
+        firmware can't do native multi-room sync over LUCI.
         """
         # All Cast groups discovered in HA (regardless of how they got there)
         cast_groups = self._discover_cast_groups()
         cast_entity_to_name = {cg["entity_id"]: cg["name"] for cg in cast_groups}
 
-        # Cast group proxies created by our integration map by unique_id
-        # pattern. Look them up via entity registry to get the underlying
-        # Cast entity_id.
         try:
             from homeassistant.helpers import entity_registry as er
             ent_reg = er.async_get(self.hass)
         except Exception:
             ent_reg = None
 
+        # Walk in REVERSE so the most-recently-added Cast group wins
+        # when multiple are selected.
         chosen_entity = None
         chosen_name = None
-        for member in group_members:
+        for member in reversed(group_members):
             if member == self.entity_id:
-                continue  # Skip self
+                continue
 
             # Direct match — user picked a Cast group entity directly
             if member in cast_entity_to_name:
@@ -538,8 +551,7 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
                 chosen_name = cast_entity_to_name[member]
                 break
 
-            # Proxy match — user picked one of our LitheCastGroupProxy
-            # entities. Resolve to the underlying Cast entity.
+            # Proxy match — resolve to underlying Cast entity
             if ent_reg:
                 ent = ent_reg.async_get(member)
                 if ent and ent.unique_id and ent.unique_id.startswith("lithe_cast_proxy_"):
@@ -553,8 +565,7 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
             _LOGGER.warning(
                 "join_players: no Cast group in %s. Lithe speakers can "
                 "only multi-room via Google Cast groups. Create one in "
-                "the Google Home app first, then it'll appear here as "
-                "'Cast: <name>'.",
+                "the Google Home app first.",
                 group_members,
             )
             return
@@ -565,8 +576,9 @@ class LitheAudioMediaPlayer(CoordinatorEntity[LitheAudioCoordinator], MediaPlaye
         except Exception:
             pass
         _LOGGER.info(
-            "join_players: routing through Cast group %r (entity=%s)",
-            chosen_name, chosen_entity,
+            "join_players: routing through Cast group %r (entity=%s) "
+            "[picked from %d candidates]",
+            chosen_name, chosen_entity, len(group_members),
         )
         self.async_write_ha_state()
 
