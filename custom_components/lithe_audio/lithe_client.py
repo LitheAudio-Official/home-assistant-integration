@@ -578,10 +578,33 @@ class LitheClient:
         data_len = len(sub)
         header = struct.pack("<HBHBHH", 0xAAAA, 0x02, MB_DSP, 0, 0x0000, data_len)
         pkt = header + sub + b"\x00"  # terminator per vendor §10.2
-        if self._writer and not self._writer.is_closing():
-            _LOGGER.debug("TX DSP MB#112: sub=0x%02x(%d) val=%d", sub_mb, sub_mb, value)
+
+        if not self._writer:
+            _LOGGER.warning(
+                "DSP TX sub=0x%02x val=%d DROPPED — no writer (not connected)",
+                sub_mb, value,
+            )
+            return
+        if self._writer.is_closing():
+            _LOGGER.warning(
+                "DSP TX sub=0x%02x val=%d DROPPED — writer closing",
+                sub_mb, value,
+            )
+            return
+
+        hex_preview = " ".join(f"{b:02X}" for b in pkt)
+        _LOGGER.info(
+            "TX DSP MB#112 sub=0x%02x val=%d (%d bytes): %s",
+            sub_mb, value, len(pkt), hex_preview,
+        )
+        try:
             self._writer.write(pkt)
             await self._writer.drain()
+        except Exception as e:
+            _LOGGER.warning(
+                "DSP TX sub=0x%02x val=%d write FAILED: %s",
+                sub_mb, value, e,
+            )
 
     # ── Callbacks ──────────────────────────────────────────────────────────
 
