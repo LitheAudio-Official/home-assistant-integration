@@ -152,22 +152,24 @@ BT_DISC    = "DISCONNECT"
 # ── DSP sub-MB IDs (tunneled inside MB#112) ─────────────────────────────────
 # Verified against real firmware CR443GP_3713 packet captures.
 # ── DSP sub-MB IDs (MB#112 payload first byte) ──────────────────────────────
-# Confirmed via Lithe app packet capture (dsp-sniffer, 2026-05-17):
-#   TX tuning    sub-MB=0x001D val=0/1
-#   TX highpass  sub-MB=0x001A val=0(OFF), 1=60Hz, 2=80Hz, 3=100Hz, 4=120Hz
-#   TX nightmode sub-MB=0x0018 val=0/1
+# Confirmed via Lithe app packet capture (dsp-sniffer, 2026-05-17/18):
+#   TX eq        sub-MB=0x000A val=0..4
 #   TX loudness  sub-MB=0x0016 val=-10..+10 (signed byte)
+#   TX nightmode sub-MB=0x0018 val=0/1
+#   TX highpass  sub-MB=0x001A val=0(OFF), 1=60Hz, 2=80Hz, 3=100Hz, 4=120Hz
+#   TX output    sub-MB=0x001C val=0=Mono, 1=Stereo, 2=Left, 3=Right
+#   TX tuning    sub-MB=0x001D val=0/1
 #   TX balance   sub-MB=0x001E val=-6..+6 (signed byte)
-# Previous values (0x0C, 0x0D, 0x29, 0xFF, 0xFE) were guesses from earlier
-# testing and incorrect — replaced with sniffed values.
-DSP_EQ        = 0x0A   # 0=Normal 1=Acoustic 2=Jazz 3=Pop 4=HipHop (confirmed)
+# Previous values (0x0C, 0x0D, 0x0F, 0x29, 0xFF, 0xFE) were guesses from
+# earlier testing and incorrect — replaced with sniffed values.
+DSP_EQ        = 0x0A   # 0=Normal 1=Acoustic 2=Jazz 3=Pop 4=HipHop (sniffed)
 DSP_TREBLE    = 0x09   # Treble cut/boost
 DSP_LOUDNESS  = 0x16   # signed byte -10..+10 (sniffed from app)
 DSP_NIGHTMODE = 0x18   # 0=OFF 1=ON (sniffed from app)
 DSP_HIGHPASS  = 0x1A   # 0=OFF, 1=60Hz, 2=80Hz, 3=100Hz, 4=120Hz (sniffed)
+DSP_OUTPUT    = 0x1C   # 0=Mono, 1=Stereo, 2=Left, 3=Right (sniffed from app)
 DSP_TUNING    = 0x1D   # 0=Enclosure 13L, 1=Open Back (sniffed)
 DSP_BALANCE   = 0x1E   # signed byte -6..+6 (sniffed from app)
-DSP_OUTPUT    = 0x0F   # 0=Mono, 1=Stereo, 2=Left, 3=Right
 
 EQ_PRESETS  = ["Normal", "Acoustic", "Jazz", "Pop", "Hip-Hop"]
 # High-pass values per sniffed app traffic:
