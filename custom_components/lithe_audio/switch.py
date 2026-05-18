@@ -72,6 +72,17 @@ class LitheNightModeSwitch(_LitheBaseSwitch):
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.data['host']}_{entry.entry_id}_nightmode"
 
+    @property
+    def is_on(self) -> bool:
+        """Use local state — speaker does not push MB#112 confirmation
+        for sub-MB 0x18, so reading state.dsp_nightmode would be stale.
+
+        The local _state is authoritative because we just sent the
+        command and the wire bytes are identical to the Lithe app's
+        (verified by packet sniffer 2026-05-18).
+        """
+        return self._state
+
     async def async_turn_on(self, **kwargs) -> None:
         self._state = True
         await self._client.async_dsp_command(DSP_NIGHTMODE, 1)
@@ -92,6 +103,13 @@ class LitheLoudnessSwitch(_LitheBaseSwitch):
     def __init__(self, coordinator, entry):
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.data['host']}_{entry.entry_id}_loudness_sw"
+
+    @property
+    def is_on(self) -> bool:
+        val = self._client.state.dsp_loudness
+        if val is not None:
+            return val != 0
+        return self._state
 
     async def async_turn_on(self, **kwargs) -> None:
         self._state = True

@@ -72,7 +72,9 @@ class LitheLoudnessNumber(_LitheBaseNumber):
 
     @property
     def native_value(self) -> float:
-        return self._value
+        # Use local _value — speaker does not push MB#112 confirmation
+        # for sub-MB 0x16, so reading state.dsp_loudness would be stale.
+        return float(self._value)
 
     async def async_set_native_value(self, value: float) -> None:
         self._value = int(value)
@@ -97,7 +99,9 @@ class LitheBalanceNumber(_LitheBaseNumber):
 
     @property
     def native_value(self) -> float:
-        return self._value
+        # Use local _value — speaker does not push MB#112 confirmation
+        # for sub-MB 0x1E, so reading state.dsp_balance would be stale.
+        return float(self._value)
 
     async def async_set_native_value(self, value: float) -> None:
         self._value = int(value)

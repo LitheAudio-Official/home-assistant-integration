@@ -83,6 +83,14 @@ class LitheEqSelect(_LitheBaseSelect):
         self._attr_unique_id = f"{entry.data['host']}_{entry.entry_id}_eq"
         self._current = "Normal"
 
+    @property
+    def current_option(self) -> str:
+        """Read live from speaker state — reflects app changes."""
+        idx = self._client.state.dsp_eq
+        if idx is not None and 0 <= idx < len(EQ_PRESETS):
+            return EQ_PRESETS[idx]
+        return self._current
+
     async def async_select_option(self, option: str) -> None:
         idx = EQ_PRESETS.index(option) if option in EQ_PRESETS else 0
         self._current = option
@@ -102,6 +110,13 @@ class LitheOutputSelect(_LitheBaseSelect):
         self._attr_unique_id = f"{entry.data['host']}_{entry.entry_id}_output"
         self._current = "Stereo"
 
+    @property
+    def current_option(self) -> str:
+        idx = self._client.state.dsp_output
+        if idx is not None and 0 <= idx < len(OUT_OPTIONS):
+            return OUT_OPTIONS[idx]
+        return self._current
+
     async def async_select_option(self, option: str) -> None:
         idx = OUT_OPTIONS.index(option) if option in OUT_OPTIONS else 0
         self._current = option
@@ -120,6 +135,12 @@ class LitheHighPassSelect(_LitheBaseSelect):
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.data['host']}_{entry.entry_id}_highpass"
         self._current = "OFF"
+
+    @property
+    def current_option(self) -> str:
+        # Use local _current — speaker does not push MB#112 confirmation
+        # for sub-MB 0x1A, so reading state.dsp_highpass would be stale.
+        return self._current
 
     async def async_select_option(self, option: str) -> None:
         # Sniffed values: 0=OFF, 1=60Hz, 2=80Hz, 3=100Hz, 4=120Hz
@@ -141,6 +162,12 @@ class LitheTuningSelect(_LitheBaseSelect):
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.data['host']}_{entry.entry_id}_tuning"
         self._current = "Enclosure 13L"
+
+    @property
+    def current_option(self) -> str:
+        # Use local _current — speaker does not push MB#112 confirmation
+        # for sub-MB 0x1D, so reading state.dsp_tuning would be stale.
+        return self._current
 
     async def async_select_option(self, option: str) -> None:
         idx = 0 if option == "Enclosure 13L" else 1
